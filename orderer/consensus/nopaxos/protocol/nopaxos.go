@@ -126,6 +126,7 @@ type NOPaxos struct {
 	mu                   sync.RWMutex
 	deliverChan          chan []struct{}
 	pendingTxs           []*message
+	canCommit            bool // 標記 leader 是否已寫入 slot
 }
 
 func (s *NOPaxos) start() {
@@ -184,6 +185,7 @@ func (s *NOPaxos) setPingTicker() {
 	}()
 }
 
+// 每隔一段時間，自動保存目前系統狀態的快照（snapshot）
 func (s *NOPaxos) setCheckpointTicker() {
 	s.logger.Debug("Setting checkpoint ticker")
 	s.checkpointTicker = time.NewTicker(s.config.GetCheckpointIntervalOrDefault())
@@ -324,4 +326,27 @@ func (s *NOPaxos) getLeader(viewID *ViewId) MemberID {
 func (s *NOPaxos) IsLeader() bool {
 	members := s.cluster.Members()
 	return members[int(uint64(s.viewID.LeaderNum)%uint64(len(members)))] == s.cluster.Member()
+}
+
+// GetStatus 返回當前協議狀態（線程安全）
+func (s *NOPaxos) GetStatus() Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status
+}
+
+// GetLogStatistics 返回當前 log 的 gap 統計信息（線程安全）
+func (s *NOPaxos) GetLogStatistics() (totalSlots int, actualEntries int, gaps int, gapRate float64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.log.GetGapStatistics()
+}
+
+// CanCommit 檢查並重置 canCommit 標誌（線程安全）
+func (s *NOPaxos) CanCommit() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := s.canCommit
+	s.canCommit = false // 重置標誌
+	return result
 }

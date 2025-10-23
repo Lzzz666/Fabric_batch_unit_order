@@ -14,7 +14,10 @@
 
 package protocol
 
+import "fmt"
+
 func (s *NOPaxos) handleStartView(request *StartView) {
+	fmt.Println("=====handleStartView=====")
 	s.logger.ReceiveFrom("StartView", request, request.Sender)
 
 	s.mu.Lock()
@@ -108,6 +111,7 @@ func (s *NOPaxos) handleStartView(request *StartView) {
 }
 
 func (s *NOPaxos) handleViewRepair(request *ViewRepair) {
+	fmt.Println("=====handleViewRepair=====")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -150,6 +154,7 @@ func (s *NOPaxos) handleViewRepair(request *ViewRepair) {
 }
 
 func (s *NOPaxos) handleViewRepairReply(reply *ViewRepairReply) {
+	fmt.Println("=====handleViewRepairReply=====")
 	// If the request views do not match, ignore the reply
 	if s.viewID.SessionNum != reply.ViewID.SessionNum || s.viewID.LeaderNum != reply.ViewID.LeaderNum {
 		return

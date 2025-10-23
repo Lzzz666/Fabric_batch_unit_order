@@ -19,6 +19,7 @@ func NewUDPServer(_host string, _port uint, _sendChan chan *message, _exitChanUD
 	return &UdpServer{host: _host, port: _port, sendChan: _sendChan, exitChanUDP: _exitChanUDP}
 }
 
+// 這個檔案不需要
 func (us *UdpServer) Start() error {
 
 	addr, err := net.ResolveUDPAddr("udp", ":7073")

@@ -14,6 +14,8 @@
 
 package protocol
 
+import "fmt"
+
 // LogSlotID is a log slot number
 type LogSlotID uint64
 
@@ -35,6 +37,19 @@ type Log struct {
 	firstSlotNum LogSlotID
 	lastSlotNum  LogSlotID
 	entries      map[LogSlotID]*NewLogEntry
+}
+
+// GetGapStatistics 返回 gap 統計信息
+func (l *Log) GetGapStatistics() (totalSlots int, actualEntries int, gaps int, gapRate float64) {
+	totalSlots = int(l.lastSlotNum - l.firstSlotNum + 1)
+	actualEntries = len(l.entries)
+	gaps = totalSlots - actualEntries
+
+	if totalSlots > 0 {
+		gapRate = float64(gaps) / float64(totalSlots) * 100.0
+	}
+
+	return
 }
 
 // Len returns the length of the log
@@ -86,4 +101,41 @@ func (l *Log) Extend(slotNum LogSlotID) {
 	if slotNum > l.lastSlotNum {
 		l.lastSlotNum = slotNum
 	}
+}
+
+// PrintLog prints the entire log contents for debugging
+func (l *Log) PrintLog(prefix string) {
+	fmt.Printf("\n=== %s LOG CONTENTS ===\n", prefix)
+
+	totalSlots := int(l.lastSlotNum - l.firstSlotNum + 1)
+	actualEntries := len(l.entries)
+	gapCount := totalSlots - actualEntries
+
+	fmt.Printf("FirstSlot: %d, LastSlot: %d\n", l.firstSlotNum, l.lastSlotNum)
+	fmt.Printf("Total Slots: %d, Actual Entries: %d, Gaps: %d\n",
+		totalSlots, actualEntries, gapCount)
+
+	if totalSlots > 0 {
+		gapRate := float64(gapCount) / float64(totalSlots) * 100.0
+		fmt.Printf("Gap Rate: %.2f%% (%d gaps / %d total slots)\n",
+			gapRate, gapCount, totalSlots)
+	}
+
+	if len(l.entries) == 0 {
+		fmt.Printf("Log is empty\n")
+		fmt.Printf("========================\n\n")
+		return
+	}
+
+	// Print entries in slot order
+	for slot := l.firstSlotNum; slot <= l.lastSlotNum; slot++ {
+		entry := l.entries[slot]
+		if entry != nil {
+			fmt.Printf("Slot[%d]: MessageNum=%d, ConfigSeq=%d\n", // 這裡的 MessageNum 是 client 的 message num??
+				slot, entry.MessageNum, entry.configSeq)
+		} else {
+			fmt.Printf("Slot[%d]: <empty/gap>\n", slot)
+		}
+	}
+	fmt.Printf("========================\n\n")
 }

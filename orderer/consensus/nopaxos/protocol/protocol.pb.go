@@ -7,6 +7,11 @@ import (
 	bytes "bytes"
 	context "context"
 	fmt "fmt"
+	io "io"
+	math "math"
+	math_bits "math/bits"
+	time "time"
+
 	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
 	_ "github.com/gogo/protobuf/types"
@@ -14,10 +19,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	io "io"
-	math "math"
-	math_bits "math/bits"
-	time "time"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -1113,9 +1114,10 @@ func (m *RecoverReply) GetLog() []*LogEntry {
 }
 
 type SlotLookup struct {
-	Sender     MemberID  `protobuf:"bytes,1,opt,name=sender,proto3,casttype=MemberID" json:"sender,omitempty"`
-	ViewID     *ViewId   `protobuf:"bytes,2,opt,name=view_id,json=viewId,proto3" json:"view_id,omitempty"`
-	MessageNum MessageID `protobuf:"varint,3,opt,name=message_num,json=messageNum,proto3,casttype=MessageID" json:"message_num,omitempty"`
+	Sender         MemberID  `protobuf:"bytes,1,opt,name=sender,proto3,casttype=MemberID" json:"sender,omitempty"`
+	ViewID         *ViewId   `protobuf:"bytes,2,opt,name=view_id,json=viewId,proto3" json:"view_id,omitempty"`
+	MessageNum     MessageID `protobuf:"varint,3,opt,name=message_num,json=messageNum,proto3,casttype=MessageID" json:"message_num,omitempty"`
+	LastMessageNum MessageID `protobuf:"varint,4,opt,name=last_message_num,json=lastMessageNum,proto3,casttype=MessageID" json:"last_message_num,omitempty"`
 }
 
 func (m *SlotLookup) Reset()         { *m = SlotLookup{} }
@@ -1168,6 +1170,13 @@ func (m *SlotLookup) GetViewID() *ViewId {
 func (m *SlotLookup) GetMessageNum() MessageID {
 	if m != nil {
 		return m.MessageNum
+	}
+	return 0
+}
+
+func (m *SlotLookup) GetLastMessageNum() MessageID {
+	if m != nil {
+		return m.LastMessageNum
 	}
 	return 0
 }

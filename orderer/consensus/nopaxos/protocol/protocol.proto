@@ -137,6 +137,7 @@ message SlotLookup {
     string sender = 1 [(gogoproto.casttype) = "MemberID"];
     ViewId view_id = 2 [(gogoproto.customname) = "ViewID"];
     uint64 message_num = 3 [(gogoproto.casttype) = "MessageID"];
+    uint64 last_message_num = 4 [(gogoproto.casttype) = "MessageID"];
 }
 
 message GapCommitRequest {

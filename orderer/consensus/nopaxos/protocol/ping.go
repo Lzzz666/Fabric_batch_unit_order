@@ -14,6 +14,8 @@
 
 package protocol
 
+import "fmt"
+
 func (s *NOPaxos) sendPing() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -73,6 +75,7 @@ func (s *NOPaxos) Timeout() {
 		go s.resetTimeout()
 	} else if s.getLeader(s.viewID) != s.cluster.Member() {
 		s.logger.Debug("Leader ping timed out")
+		fmt.Println("====================Leader ping timed out, startLeaderChange====================")
 		go s.startLeaderChange()
 		go s.resetTimeout()
 	} else {

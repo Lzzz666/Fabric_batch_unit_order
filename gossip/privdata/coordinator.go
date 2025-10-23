@@ -158,6 +158,9 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 	}
 
 	c.logger.Infof("Received block [%d] from buffer", block.Header.Number)
+	c.logger.Infof("Block metaData: %v", block.Metadata)
+	// 應該要 unmarshal 出來看
+
 
 	c.logger.Debugf("Validating block [%d]", block.Header.Number)
 

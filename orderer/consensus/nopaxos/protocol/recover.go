@@ -14,7 +14,10 @@
 
 package protocol
 
+import "fmt"
+
 func (s *NOPaxos) startRecovery() {
+	fmt.Println("=====startRecovery=====")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -38,6 +41,7 @@ func (s *NOPaxos) startRecovery() {
 }
 
 func (s *NOPaxos) handleRecover(request *Recover) {
+	fmt.Println("=====handleRecover=====")
 	s.logger.ReceiveFrom("Recover", request, request.Sender)
 
 	s.mu.RLock()
@@ -99,6 +103,7 @@ func (s *NOPaxos) handleRecover(request *Recover) {
 }
 
 func (s *NOPaxos) handleRecoverReply(reply *RecoverReply) {
+	fmt.Println("=====handleRecoverReply=====")
 	s.logger.ReceiveFrom("RecoverReply", reply, reply.Sender)
 
 	s.mu.Lock()

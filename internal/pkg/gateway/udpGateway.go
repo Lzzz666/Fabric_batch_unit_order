@@ -9,7 +9,7 @@ import (
 
 func (gs *Server) connect() error {
 
-	sequencerAddr, err := net.ResolveUDPAddr("udp", "192.168.50.184:7072")
+	sequencerAddr, err := net.ResolveUDPAddr("udp", "172.20.10.4:7072")
 	if err != nil {
 		return fmt.Errorf("error connecting to server: %w", err)
 	}

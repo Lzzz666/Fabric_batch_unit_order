@@ -17,11 +17,14 @@ package protocol
 import (
 	"encoding/binary"
 	"encoding/json"
-	"github.com/willf/bloom"
+	"fmt"
 	"math"
+
+	"github.com/willf/bloom"
 )
 
 func (s *NOPaxos) startLeaderChange() {
+	fmt.Println("====================startLeaderChange====================")
 	s.mu.RLock()
 	newViewID := &ViewId{
 		SessionNum: s.viewID.SessionNum,
@@ -41,6 +44,10 @@ func (s *NOPaxos) startLeaderChange() {
 
 	for _, member := range s.cluster.Members() {
 		s.logger.SendTo("ViewChangeRequest", viewChangeRequest, member)
+		fmt.Println("=====send ViewChangeRequest to", member, "=====")
+		fmt.Println("=====message=====")
+		fmt.Println(message)
+		fmt.Println("========================================================")
 		go s.send(message, member)
 	}
 
@@ -48,6 +55,15 @@ func (s *NOPaxos) startLeaderChange() {
 }
 
 func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
+	fmt.Println("=====handleViewChangeRequest=====")
+	fmt.Println("=====request.Sender=====")
+	fmt.Println(request.Sender)
+	fmt.Println("=====request.ViewID=====")
+	fmt.Println(request.ViewID)
+	fmt.Println("========================================================")
+	fmt.Println("=====s.viewID=====")
+	fmt.Println(s.viewID)
+	fmt.Println("========================================================")
 	s.logger.ReceiveFrom("ViewChangeRequest", request, request.Sender)
 
 	s.mu.Lock()
@@ -55,9 +71,11 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 
 	// If the replica is recovering, ignore the view change
 	if s.status == StatusRecovering {
+		fmt.Println("=====s.status == StatusRecovering, return=====")
 		return
 	}
 
+	fmt.Println("=====s.status != StatusRecovering, continue=====")
 	newLeaderID := LeaderID(math.Max(float64(s.viewID.LeaderNum), float64(request.ViewID.LeaderNum)))
 	newSessionID := SessionID(math.Max(float64(s.viewID.SessionNum), float64(request.ViewID.SessionNum)))
 	newViewID := &ViewId{
@@ -65,21 +83,31 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 		SessionNum: newSessionID,
 	}
 
+	fmt.Println("=====newViewID=====")
+	fmt.Println(newViewID)
+	fmt.Println("========================================================")
+
 	// If the view IDs match, ignore the request
 	if s.viewID.LeaderNum == newViewID.LeaderNum && s.viewID.SessionNum == newViewID.SessionNum {
 		s.logger.Debug("Dropping ViewChangeRequest: Already in the requested view")
 		return
 	}
-
+	fmt.Println("=====s.viewID.LeaderNum == newViewID.LeaderNum && s.viewID.SessionNum == newViewID.SessionNum, return=====")
 	// Set the replica's status to ViewChange
 	s.setStatus(StatusViewChange)
-
+	fmt.Println("=====s.setStatus(StatusViewChange)=====")
 	// Set the replica's view ID to the new view ID
 	s.viewID = newViewID
 
+	fmt.Println("=====s.viewID = newViewID=====")
+	fmt.Println(s.viewID)
+	fmt.Println("========================================================")
+
 	// Reset the view changes
 	s.viewChanges = make(map[MemberID]*ViewChange)
-
+	fmt.Println("=====s.viewChanges = make(map[MemberID]*ViewChange)=====")
+	fmt.Println(s.viewChanges)
+	fmt.Println("========================================================")
 	// Create a bloom filter of the log and add non-empty entries
 	noOpFilter := bloom.New(uint(s.log.LastSlot()-s.log.FirstSlot()+1), bloomFilterHashFunctions)
 	for slotNum := s.log.FirstSlot(); slotNum <= s.log.LastSlot(); slotNum++ {
@@ -89,6 +117,10 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 			noOpFilter.Add(key)
 		}
 	}
+
+	fmt.Println("=====noOpFilter=====")
+	fmt.Println(noOpFilter)
+	fmt.Println("========================================================")
 
 	// Marshall the bloom filter to bytes
 	noOpFilterBytes, err := json.Marshal(noOpFilter)
@@ -115,7 +147,12 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 	}
 	s.logger.SendTo("ViewChange", viewChange, leader)
 	go s.send(message, leader)
-
+	fmt.Println("=====send ViewChange to leader=====")
+	fmt.Println("=====leader=====")
+	fmt.Println(leader)
+	fmt.Println("=====message=====")
+	fmt.Println(message)
+	fmt.Println("========================================================")
 	// Send a ViewChangeRequest to all other replicas
 	viewChangeRequest := &ViewChangeRequest{
 		Sender: s.cluster.Member(),
@@ -126,7 +163,9 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 			ViewChangeRequest: viewChangeRequest,
 		},
 	}
-
+	fmt.Println("=====viewChangeRequest=====")
+	fmt.Println(viewChangeRequest)
+	fmt.Println("========================================================")
 	// Send a view change request to all replicas other than the leader
 	for _, member := range s.cluster.Members() {
 		s.logger.SendTo("ViewChangeRequest", viewChangeRequest, member)
@@ -135,6 +174,7 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 }
 
 func (s *NOPaxos) handleViewChange(request *ViewChange) {
+	fmt.Println("=====handleViewChange=====")
 	s.logger.ReceiveFrom("ViewChange", request, request.Sender)
 
 	s.mu.Lock()
@@ -159,9 +199,15 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 	}
 
 	// Add the view change to the set of view changes
+	fmt.Println("=====s.viewChanges[request.Sender] = request=====")
+	fmt.Println(request)
+	fmt.Println("========================================================")
 	s.viewChanges[request.Sender] = request
 
 	// Aggregate the view changes for the current view
+	fmt.Println("=====s.viewChanges=====")
+	fmt.Println(s.viewChanges)
+	fmt.Println("========================================================")
 	localViewChanged := false
 	viewChanges := make([]*ViewChange, 0, len(s.viewChanges))
 	for _, viewChange := range s.viewChanges {
@@ -172,7 +218,9 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 			}
 		}
 	}
-
+	fmt.Println("=====viewChanges=====")
+	fmt.Println(viewChanges)
+	fmt.Println("========================================================")
 	// If the view changes have reached a quorum, start the new view
 	if localViewChanged && len(viewChanges) >= s.cluster.QuorumSize() {
 		// Create the state for the new view
@@ -311,6 +359,7 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 }
 
 func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
+	fmt.Println("=====handleViewChangeRepair=====")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -356,6 +405,7 @@ func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 }
 
 func (s *NOPaxos) handleViewChangeRepairReply(reply *ViewChangeRepairReply) {
+	fmt.Println("=====handleViewChangeRepairReply=====")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

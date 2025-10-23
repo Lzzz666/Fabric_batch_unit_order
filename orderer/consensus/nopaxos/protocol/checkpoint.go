@@ -17,10 +17,12 @@ package protocol
 import (
 	"bytes"
 	"crypto/sha256"
+	"fmt"
 	"io"
 )
 
 func (s *NOPaxos) checkpoint() {
+	fmt.Println("=====checkpoint=====")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
