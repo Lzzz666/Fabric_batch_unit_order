@@ -18,20 +18,38 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 
 	"github.com/willf/bloom"
 )
 
+// compareViewID 比較兩個 ViewID，返回值：> 0 表示 v1 > v2，< 0 表示 v1 < v2，0 表示相等
+func compareViewID(v1, v2 *ViewId) int {
+	if v1.LeaderNum != v2.LeaderNum {
+		return int(v1.LeaderNum - v2.LeaderNum)
+	}
+	return int(v1.SessionNum - v2.SessionNum)
+}
+
 func (s *NOPaxos) startLeaderChange() {
 	fmt.Println("====================startLeaderChange====================")
-	s.mu.RLock()
+
+	s.mu.Lock()
+
+	// 檢查是否已經在 view change 中，避免重複觸發
+	if s.status == StatusViewChange {
+		s.mu.Unlock()
+		return
+	}
+
+	// Create new view ID with incremented leader number
 	newViewID := &ViewId{
 		SessionNum: s.viewID.SessionNum,
 		LeaderNum:  s.viewID.LeaderNum + 1,
 	}
-	s.mu.RUnlock()
 
+	s.mu.Unlock()
+
+	// Send ViewChangeRequest to all replicas (including self)
 	viewChangeRequest := &ViewChangeRequest{
 		Sender: s.cluster.Member(),
 		ViewID: newViewID,
@@ -44,93 +62,79 @@ func (s *NOPaxos) startLeaderChange() {
 
 	for _, member := range s.cluster.Members() {
 		s.logger.SendTo("ViewChangeRequest", viewChangeRequest, member)
-		fmt.Println("=====send ViewChangeRequest to", member, "=====")
-		fmt.Println("=====message=====")
-		fmt.Println(message)
-		fmt.Println("========================================================")
 		go s.send(message, member)
 	}
 
 	go s.resetTimeout()
 }
 
+
 func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
-	fmt.Println("=====handleViewChangeRequest=====")
-	fmt.Println("=====request.Sender=====")
-	fmt.Println(request.Sender)
-	fmt.Println("=====request.ViewID=====")
-	fmt.Println(request.ViewID)
-	fmt.Println("========================================================")
-	fmt.Println("=====s.viewID=====")
-	fmt.Println(s.viewID)
-	fmt.Println("========================================================")
+
 	s.logger.ReceiveFrom("ViewChangeRequest", request, request.Sender)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// If the replica is recovering, ignore the view change
 	if s.status == StatusRecovering {
-		fmt.Println("=====s.status == StatusRecovering, return=====")
+		s.mu.Unlock()
 		return
 	}
 
-	fmt.Println("=====s.status != StatusRecovering, continue=====")
-	newLeaderID := LeaderID(math.Max(float64(s.viewID.LeaderNum), float64(request.ViewID.LeaderNum)))
-	newSessionID := SessionID(math.Max(float64(s.viewID.SessionNum), float64(request.ViewID.SessionNum)))
-	newViewID := &ViewId{
-		LeaderNum:  newLeaderID,
-		SessionNum: newSessionID,
+	var newViewID *ViewId
+	if compareViewID(request.ViewID, s.viewID) > 0 { // 如果 request.ViewID 比 s.viewID 大，則使用 request.ViewID
+		newViewID = request.ViewID
+	} else {
+		newViewID = s.viewID
 	}
-
-	fmt.Println("=====newViewID=====")
-	fmt.Println(newViewID)
-	fmt.Println("========================================================")
 
 	// If the view IDs match, ignore the request
+	// 如果 viewID 相同，但 session number 不同勒？要額外處理？
 	if s.viewID.LeaderNum == newViewID.LeaderNum && s.viewID.SessionNum == newViewID.SessionNum {
 		s.logger.Debug("Dropping ViewChangeRequest: Already in the requested view")
+		s.mu.Unlock()
 		return
 	}
-	fmt.Println("=====s.viewID.LeaderNum == newViewID.LeaderNum && s.viewID.SessionNum == newViewID.SessionNum, return=====")
+	
+	// 記錄之前的狀態，用於判斷是否需要廣播
+	previousStatus := s.status
+
 	// Set the replica's status to ViewChange
 	s.setStatus(StatusViewChange)
-	fmt.Println("=====s.setStatus(StatusViewChange)=====")
 	// Set the replica's view ID to the new view ID
 	s.viewID = newViewID
 
-	fmt.Println("=====s.viewID = newViewID=====")
-	fmt.Println(s.viewID)
-	fmt.Println("========================================================")
-
 	// Reset the view changes
 	s.viewChanges = make(map[MemberID]*ViewChange)
-	fmt.Println("=====s.viewChanges = make(map[MemberID]*ViewChange)=====")
-	fmt.Println(s.viewChanges)
-	fmt.Println("========================================================")
-	// Create a bloom filter of the log and add non-empty entries
+
+
+	// 修正：Create a bloom filter for NO-OP slots (empty slots)
+	// NO-OP filter 應該標記**沒有**資料的 slot
+	// 這裡應該是記錄所有有資料的 slot
+	// 之後資料給 peer 也可以用這種方式，可是好像會有碰撞，有可能會遇到 false positive
+	// 所以 Bloom Filter 永遠不會錯報「不存在的元素為不存在」，
+	// 只有「不存在的元素被誤判為存在」。
 	noOpFilter := bloom.New(uint(s.log.LastSlot()-s.log.FirstSlot()+1), bloomFilterHashFunctions)
 	for slotNum := s.log.FirstSlot(); slotNum <= s.log.LastSlot(); slotNum++ {
-		if entry := s.log.Get(slotNum); entry == nil {
+		if entry := s.log.Get(slotNum); entry == nil { // entry == nil 才是 no-op
 			key := make([]byte, 8)
 			binary.BigEndian.PutUint64(key, uint64(slotNum))
 			noOpFilter.Add(key)
+			fmt.Printf("empty slot: %d\n", slotNum)
 		}
 	}
-
-	fmt.Println("=====noOpFilter=====")
-	fmt.Println(noOpFilter)
-	fmt.Println("========================================================")
 
 	// Marshall the bloom filter to bytes
 	noOpFilterBytes, err := json.Marshal(noOpFilter)
 	if err != nil {
 		s.logger.Error("Failed to encode bloom filter", err)
+		s.mu.Unlock()
 		return
 	}
 
-	// Send a ViewChange message to the leader
+	// 準備要發送的消息（在鎖內準備）
 	leader := s.getLeader(newViewID)
+	// 把自己的 log 發送給 new leader
 	viewChange := &ViewChange{
 		Sender:          s.cluster.Member(),
 		ViewID:          newViewID,
@@ -140,45 +144,80 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 		FirstLogSlotNum: s.log.FirstSlot(),
 		LastLogSlotNum:  s.log.LastSlot(),
 	}
-	message := &ReplicaMessage{
+	viewChangeMessage := &ReplicaMessage{
 		Message: &ReplicaMessage_ViewChange{
 			ViewChange: viewChange,
 		},
 	}
-	s.logger.SendTo("ViewChange", viewChange, leader)
-	go s.send(message, leader)
-	fmt.Println("=====send ViewChange to leader=====")
-	fmt.Println("=====leader=====")
-	fmt.Println(leader)
-	fmt.Println("=====message=====")
-	fmt.Println(message)
-	fmt.Println("========================================================")
-	// Send a ViewChangeRequest to all other replicas
+
 	viewChangeRequest := &ViewChangeRequest{
 		Sender: s.cluster.Member(),
 		ViewID: newViewID,
 	}
-	message = &ReplicaMessage{
+	viewChangeRequestMessage := &ReplicaMessage{
 		Message: &ReplicaMessage_ViewChangeRequest{
 			ViewChangeRequest: viewChangeRequest,
 		},
 	}
-	fmt.Println("=====viewChangeRequest=====")
-	fmt.Println(viewChangeRequest)
-	fmt.Println("========================================================")
-	// Send a view change request to all replicas other than the leader
-	for _, member := range s.cluster.Members() {
-		s.logger.SendTo("ViewChangeRequest", viewChangeRequest, member)
-		go s.send(message, member)
+
+	members := s.cluster.Members()
+	myMember := s.cluster.Member()
+
+	// 釋放鎖後再發送消息
+	s.mu.Unlock()
+
+	// Send a ViewChange message (自己ㄉ log) to the leader
+	s.logger.SendTo("ViewChange", viewChange, leader)
+	go s.send(viewChangeMessage, leader)
+
+
+	// 只有在首次進入 view change 時才廣播 ViewChangeRequest（避免無窮遞迴）
+	if previousStatus != StatusViewChange {
+		// Send a ViewChangeRequest to all other replicas (不包括自己)
+		for _, member := range members {
+			if member != myMember {
+				s.logger.SendTo("ViewChangeRequest", viewChangeRequest, member)
+				go s.send(viewChangeRequestMessage, member)
+			}
+		}
+	} else {
+		fmt.Println("=====Already was in ViewChange, skipping broadcast=====")
 	}
+
+	// Reset timeout to wait for StartView from the new leader
+	go s.resetTimeout()
 }
 
+
+
+
+// 我要自己寫一個跟 peer 拉 log 的 view change function
+// func (s *NOPaxos) handleViewChangePullLogFromPeer() {
+// 	// TODO: 實作這個 function
+// }
+
+
+
+
+// 看一下這裡的流程
+// 1. 收到 ViewChange 消息
+// 2. 檢查 viewID 是否匹配
+// 3. 檢查狀態是否為 ViewChange
+// 4. 檢查是否為 leader
+// 5. 檢查 viewChanges 是否達到 quorum
+// 6. 找出最大的 lastNormal view
+// 7. 重建 log
+// 8. 發送 StartView 消息
+// 9. 發送 ViewChangeRepair 消息
+// 10. 發送 ViewChangeRepairReply 消息
+// 11. 發送 StartView 消息
+
 func (s *NOPaxos) handleViewChange(request *ViewChange) {
-	fmt.Println("=====handleViewChange=====")
 	s.logger.ReceiveFrom("ViewChange", request, request.Sender)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 
 	// If the view IDs do not match, ignore the request
 	if s.viewID.LeaderNum != request.ViewID.LeaderNum || s.viewID.SessionNum != request.ViewID.SessionNum {
@@ -195,19 +234,17 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 	// If this replica is not the leader of the view, ignore the request
 	if s.getLeader(request.ViewID) != s.cluster.Member() {
 		s.logger.Debug("Dropping ViewChange: Replica is not the leader of the requested view")
+		fmt.Println("=====DROPPING ViewChange: I am not the leader for this view=====")
 		return
 	}
 
+	fmt.Println("=====I AM THE LEADER, processing ViewChange=====")
+
 	// Add the view change to the set of view changes
-	fmt.Println("=====s.viewChanges[request.Sender] = request=====")
-	fmt.Println(request)
-	fmt.Println("========================================================")
+
 	s.viewChanges[request.Sender] = request
 
-	// Aggregate the view changes for the current view
-	fmt.Println("=====s.viewChanges=====")
-	fmt.Println(s.viewChanges)
-	fmt.Println("========================================================")
+
 	localViewChanged := false
 	viewChanges := make([]*ViewChange, 0, len(s.viewChanges))
 	for _, viewChange := range s.viewChanges {
@@ -221,22 +258,27 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 	fmt.Println("=====viewChanges=====")
 	fmt.Println(viewChanges)
 	fmt.Println("========================================================")
+
 	// If the view changes have reached a quorum, start the new view
+	fmt.Println("=====ViewChange quorum check=====")
+	fmt.Println("=====localViewChanged=====", localViewChanged)
+	fmt.Println("=====len(viewChanges)=====", len(viewChanges))
+	fmt.Println("=====QuorumSize=====", s.cluster.QuorumSize())
+
 	if localViewChanged && len(viewChanges) >= s.cluster.QuorumSize() {
-		// Create the state for the new view
-		var lastNormal *ViewId
-		for _, viewChange1 := range viewChanges {
-			normal := true
-			for _, viewChange2 := range viewChanges {
-				if viewChange2.LastNormal.SessionNum > viewChange1.LastNormal.SessionNum || viewChange2.LastNormal.LeaderNum > viewChange1.LastNormal.LeaderNum {
-					normal = false
-					break
-				}
-			}
-			if normal {
-				lastNormal = viewChange1.LastNormal
+		fmt.Println("=====QUORUM REACHED! Starting new view=====")
+
+		// 找出最大的 lastNormal view（修正算法）
+		lastNormal := viewChanges[0].LastNormal
+		for _, viewChange := range viewChanges[1:] {
+			if viewChange.LastNormal.SessionNum > lastNormal.SessionNum ||
+				(viewChange.LastNormal.SessionNum == lastNormal.SessionNum &&
+					viewChange.LastNormal.LeaderNum > lastNormal.LeaderNum) {
+				lastNormal = viewChange.LastNormal
 			}
 		}
+
+		fmt.Println("=====Selected lastNormal view=====", lastNormal)
 
 		var newMessageID MessageID
 		var minSlotNum, maxSlotNum LogSlotID
@@ -273,35 +315,53 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 			}
 		}
 
+		fmt.Println("=====Log range: minSlot=", minSlotNum, "maxSlot=", maxSlotNum, "=====")
+
+		// 修正：重建 log 時，使用多數派規則
 		newLog := newLog(minSlotNum)
 		noOpSlots := make(map[MemberID][]LogSlotID)
+
 		for slotNum := minSlotNum; slotNum <= maxSlotNum; slotNum++ {
-			// If the entry is missing from the local log, it's a no-op.
-			// If the entry is present, check no-op filters to determine whether to request
-			// a repair from peers.
+			// 統計有多少 replica 認為這個 slot 是 no-op
+			noOpCount := 0
+			hasDataCount := 0
+
+			for member, noOpFilter := range noOpFilters {
+				if noOpFilter.isMaybeNoOp(slotNum) {
+					noOpCount++
+					// 需要從該 replica 請求確認
+					slots := noOpSlots[member]
+					if slots == nil {
+						slots = make([]LogSlotID, 0)
+					}
+					noOpSlots[member] = append(slots, slotNum)
+				} else {
+					hasDataCount++
+				}
+			}
+
+			fmt.Printf("=====Slot %d: noOp=%d, hasData=%d=====\n", slotNum, noOpCount, hasDataCount)
+
+			// 如果本地有這個 entry，先加入 newLog
+			// 後續透過 repair 機制確認是否真的該保留
 			if entry := s.log.Get(slotNum); entry != nil {
 				newLog.Set(entry)
-
-				// For each member, if the no-op is present in the member's filter request a repair.
-				for member, noOpFilter := range noOpFilters {
-					if noOpFilter.isMaybeNoOp(slotNum) {
-						slots := noOpSlots[member]
-						if slots == nil {
-							slots = make([]LogSlotID, 0)
-						}
-						noOpSlots[member] = append(slots, slotNum)
-					}
-				}
 			}
 		}
 
 		// Set the view change log. Note this log is maintained separate from the primary log until the view is started.
 		s.viewLog = newLog
 
+		fmt.Println("=====noOpSlots (need repair)=====", noOpSlots)
+		fmt.Println("=====maxCheckpoint=====", maxCheckpoint)
+
 		// If there are any missing slots in the log, store the new log and send LogRepair requests to peers to
 		// determine whether a no-op entry should be written to the log. Otherwise, send a StartView.
 		if len(noOpSlots) > 0 || maxCheckpoint > 0 {
+			fmt.Println("=====Initiating repair phase=====")
 			s.viewChangeRepairs = make(map[MemberID]*ViewChangeRepair)
+			s.viewChangeRepairReps = make(map[MemberID]*ViewChangeRepairReply) // 初始化
+
 			for member, slots := range noOpSlots {
 				repair := &ViewChangeRepair{
 					Sender:     s.cluster.Member(),
@@ -310,62 +370,79 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 					Checkpoint: maxCheckpoint,
 					SlotNums:   slots,
 				}
+				s.viewChangeRepairs[member] = repair // 記錄發送的 repair request
+
 				message := &ReplicaMessage{
 					Message: &ReplicaMessage_ViewChangeRepair{
 						ViewChangeRepair: repair,
 					},
 				}
 				s.logger.SendTo("ViewChangeRepair", repair, member)
+				fmt.Printf("=====Sending repair request to %v for slots %v=====\n", member, slots)
 				go s.send(message, member)
 			}
 		} else {
-			// Create a new no-op filter and add no-op entries
-			filter := newNoOpFilter(s.viewLog.FirstSlot(), s.viewLog.LastSlot())
-			for slotNum := s.viewLog.FirstSlot(); slotNum <= s.viewLog.LastSlot(); slotNum++ {
-				if entry := s.viewLog.Get(slotNum); entry == nil {
-					filter.add(slotNum)
-				}
-			}
-
-			// Marshal the no-op filter to JSON
-			filterJson, err := filter.marshal()
-			if err != nil {
-				s.logger.Error("Failed to marshal bloom filter", err)
-				return
-			}
-
-			// Create and send a StartView message to each replica with the no-op filter
-			startView := &StartView{
-				Sender:          s.cluster.Member(),
-				ViewID:          s.viewID,
-				MessageNum:      newMessageID,
-				NoOpFilter:      filterJson,
-				FirstLogSlotNum: s.viewLog.FirstSlot(),
-				LastLogSlotNum:  s.viewLog.LastSlot(),
-			}
-			message := &ReplicaMessage{
-				Message: &ReplicaMessage_StartView{
-					StartView: startView,
-				},
-			}
-
-			// Send a StartView to each replica
-			for _, member := range s.cluster.Members() {
-				s.logger.SendTo("StartView", startView, member)
-				go s.send(message, member)
-			}
+			fmt.Println("=====No repair needed, sending StartView directly=====")
+			s.sendStartView(newMessageID)
 		}
+	} else {
+		fmt.Println("=====NOT starting new view: quorum not reached=====")
+	}
+}
+
+// sendStartView 提取為獨立函數，避免重複程式碼
+func (s *NOPaxos) sendStartView(newMessageID MessageID) {
+	// Create a new no-op filter and add no-op entries
+	filter := newNoOpFilter(s.viewLog.FirstSlot(), s.viewLog.LastSlot())
+	for slotNum := s.viewLog.FirstSlot(); slotNum <= s.viewLog.LastSlot(); slotNum++ {
+		if entry := s.viewLog.Get(slotNum); entry == nil {
+			filter.add(slotNum)
+		}
+	}
+
+	// Marshal the no-op filter to JSON
+	filterJson, err := filter.marshal()
+	if err != nil {
+		s.logger.Error("Failed to marshal bloom filter", err)
+		return
+	}
+
+	// Create and send a StartView message to each replica with the no-op filter
+	startView := &StartView{
+		Sender:          s.cluster.Member(),
+		ViewID:          s.viewID,
+		MessageNum:      newMessageID,
+		NoOpFilter:      filterJson,
+		FirstLogSlotNum: s.viewLog.FirstSlot(),
+		LastLogSlotNum:  s.viewLog.LastSlot(),
+	}
+	message := &ReplicaMessage{
+		Message: &ReplicaMessage_StartView{
+			StartView: startView,
+		},
+	}
+
+	// Send a StartView to each replica
+	fmt.Println("=====SENDING StartView to all replicas=====")
+	fmt.Println("=====StartView content=====", startView)
+	for _, member := range s.cluster.Members() {
+		s.logger.SendTo("StartView", startView, member)
+		fmt.Println("=====Sending StartView to", member, "=====")
+		go s.send(message, member)
 	}
 }
 
 func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 	fmt.Println("=====handleViewChangeRepair=====")
+	fmt.Println("=====From:", request.Sender, "for slots:", request.SlotNums, "=====")
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	// If the request views do not match, ignore the request
 	if s.viewID.SessionNum != request.ViewID.SessionNum || s.viewID.LeaderNum != request.ViewID.LeaderNum {
 		s.logger.Debug("Dropping ViewChangeRepair: Views do not match")
+		fmt.Println("=====DROPPING: View mismatch=====")
 		return
 	}
 
@@ -375,6 +452,9 @@ func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 	for _, slotNum := range request.SlotNums {
 		if entry := s.log.Get(slotNum); entry != nil {
 			slots = append(slots, slotNum)
+			fmt.Printf("=====Slot %d: has entry=====\n", slotNum)
+		} else {
+			fmt.Printf("=====Slot %d: is NO-OP=====\n", slotNum)
 		}
 	}
 
@@ -384,6 +464,7 @@ func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 	if request.Checkpoint > 0 && s.currentCheckpoint != nil && request.Checkpoint <= s.currentCheckpoint.SlotNum {
 		checkpointSlotNum = s.currentCheckpoint.SlotNum
 		checkpointData = s.currentCheckpoint.Data
+		fmt.Println("=====Sending checkpoint at slot", checkpointSlotNum, "=====")
 	}
 
 	// Send non-nil entries back to the sender
@@ -401,11 +482,14 @@ func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 		},
 	}
 	s.logger.SendTo("ViewChangeRepairReply", viewChangeReply, request.Sender)
+	fmt.Printf("=====Replying to %v: slots with data=%v=====\n", request.Sender, slots)
 	go s.send(message, request.Sender)
 }
 
 func (s *NOPaxos) handleViewChangeRepairReply(reply *ViewChangeRepairReply) {
 	fmt.Println("=====handleViewChangeRepairReply=====")
+	fmt.Println("=====From:", reply.Sender, "with slots:", reply.SlotNums, "=====")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -424,11 +508,16 @@ func (s *NOPaxos) handleViewChangeRepairReply(reply *ViewChangeRepairReply) {
 	if reply.CheckpointSlotNum > 0 && (s.currentCheckpoint == nil || reply.CheckpointSlotNum > s.currentCheckpoint.SlotNum) {
 		s.currentCheckpoint = newCheckpoint(reply.CheckpointSlotNum)
 		s.currentCheckpoint.Data = reply.Checkpoint
+		fmt.Println("=====Updated checkpoint to slot", reply.CheckpointSlotNum, "=====")
 	}
+
+	fmt.Printf("=====Repair progress: %d/%d replies received=====\n", len(s.viewChangeRepairReps), len(s.viewChangeRepairs))
 
 	// If all view repairs have been responded to, remove entries where any slot is empty
 	// and populate slots where all entries have been returned
 	if len(s.viewChangeRepairs) == len(s.viewChangeRepairReps) {
+		fmt.Println("=====All repair replies received, reconciling log=====")
+
 		// Compute the number of requests for each slot
 		slots := make(map[LogSlotID]*repairState)
 		for _, slotRepair := range s.viewChangeRepairs {
@@ -452,52 +541,30 @@ func (s *NOPaxos) handleViewChangeRepairReply(reply *ViewChangeRepairReply) {
 			}
 		}
 
-		// For each slot, remove entries where the replies do not equal the requests
+		// 關鍵修正：使用多數派規則決定保留還是刪除
+		quorumSize := s.cluster.QuorumSize()
 		for slotNum, slot := range slots {
-			if slot.requests != slot.replies {
+			fmt.Printf("=====Slot %d: requests=%d, replies=%d, quorum=%d=====\n",
+				slotNum, slot.requests, slot.replies, quorumSize)
+
+			// 如果回報有資料的 replica 數量 < quorum，則刪除（認定為 no-op）
+			if slot.replies < quorumSize {
+				fmt.Printf("=====Deleting slot %d (insufficient confirmation: %d < %d)=====\n",
+					slotNum, slot.replies, quorumSize)
 				s.viewLog.Delete(slotNum)
+			} else {
+				fmt.Printf("=====Keeping slot %d (confirmed by quorum: %d >= %d)=====\n",
+					slotNum, slot.replies, quorumSize)
 			}
 		}
 
-		// Create a new no-op filter and add no-op entries
-		noOpFilter := newNoOpFilter(s.viewLog.FirstSlot(), s.viewLog.LastSlot())
-		for slotNum := s.viewLog.FirstSlot(); slotNum <= s.viewLog.LastSlot(); slotNum++ {
-			if entry := s.viewLog.Get(slotNum); entry == nil {
-				noOpFilter.add(slotNum)
-			}
-		}
-
-		// Marshal the no-op filter to JSON
-		noOpFilterJson, err := noOpFilter.marshal()
-		if err != nil {
-			s.logger.Error("Failed to marshal no-op filter", err)
-			return
-		}
-
-		// Create and send a StartView message to each replica with the no-op filter
-		startView := &StartView{
-			Sender:          s.cluster.Member(),
-			ViewID:          s.viewID,
-			MessageNum:      reply.MessageNum,
-			NoOpFilter:      noOpFilterJson,
-			FirstLogSlotNum: s.viewLog.FirstSlot(),
-			LastLogSlotNum:  s.viewLog.LastSlot(),
-		}
-		message := &ReplicaMessage{
-			Message: &ReplicaMessage_StartView{
-				StartView: startView,
-			},
-		}
-
-		// Send a StartView to each replica
-		for _, member := range s.cluster.Members() {
-			s.logger.SendTo("StartView", startView, member)
-			go s.send(message, member)
-		}
+		// Send StartView
+		s.sendStartView(reply.MessageNum)
 
 		// Unset repair fields
 		s.viewChangeRepairs = make(map[MemberID]*ViewChangeRepair)
 		s.viewChangeRepairReps = make(map[MemberID]*ViewChangeRepairReply)
+		fmt.Println("=====Repair phase completed=====")
 	}
 }
 
@@ -538,7 +605,7 @@ func (f *noOpFilter) isMaybeNoOp(slotNum LogSlotID) bool {
 }
 
 func (f *noOpFilter) marshal() ([]byte, error) {
-	return json.Marshal(newNoOpFilter)
+	return json.Marshal(f.filter)
 }
 
 func (f *noOpFilter) unmarshal(bytes []byte) error {

@@ -73,6 +73,13 @@ func (s *NOPaxos) Timeout() {
 	if s.status == StatusRecovering {
 		go s.startRecovery()
 		go s.resetTimeout()
+	} else if s.status == StatusViewChange {
+		// If still in ViewChange state, the previous view change may have failed
+		// Start a new view change to try the next leader
+		s.logger.Debug("ViewChange timed out, starting new view change")
+		fmt.Println("====================ViewChange timed out, startLeaderChange====================")
+		go s.startLeaderChange()
+		go s.resetTimeout()
 	} else if s.getLeader(s.viewID) != s.cluster.Member() {
 		s.logger.Debug("Leader ping timed out")
 		fmt.Println("====================Leader ping timed out, startLeaderChange====================")

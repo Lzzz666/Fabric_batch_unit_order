@@ -24,7 +24,7 @@ func (s *NOPaxos) handleStartView(request *StartView) {
 	defer s.mu.Unlock()
 
 	// If the local view is newer than the request view, skip the view
-	if s.viewID.SessionNum > request.ViewID.SessionNum && s.viewID.LeaderNum > request.ViewID.LeaderNum {
+	if s.viewID.SessionNum > request.ViewID.SessionNum || s.viewID.LeaderNum > request.ViewID.LeaderNum {
 		return
 	}
 
@@ -85,6 +85,12 @@ func (s *NOPaxos) handleStartView(request *StartView) {
 		s.setStatus(StatusNormal)
 		s.viewID = request.ViewID
 		s.lastNormView = request.ViewID
+
+		// 如果本節點是新 leader，設置 canCommit 標誌，允許開始打包區塊
+		if s.getLeader(s.viewID) == s.cluster.Member() {
+			s.canCommit = true
+			fmt.Println("=====New leader canCommit set to true=====")
+		}
 
 		// Send a reply for all commands in the log
 		sequencer := s.sequencer
@@ -198,6 +204,12 @@ func (s *NOPaxos) handleViewRepairReply(reply *ViewRepairReply) {
 	s.setStatus(StatusNormal)
 	s.viewID = request.ViewID
 	s.lastNormView = request.ViewID
+
+	// 如果本節點是新 leader，設置 canCommit 標誌，允許開始打包區塊
+	if s.getLeader(s.viewID) == s.cluster.Member() {
+		s.canCommit = true
+		fmt.Println("=====New leader canCommit set to true (after ViewRepair)=====")
+	}
 
 	// If a checkpoint exists and is less than the sync point, restore the checkpoint
 	if s.currentCheckpoint != nil && s.currentCheckpoint.SlotNum <= s.log.LastSlot() && s.currentCheckpoint.SlotNum > s.applied {
