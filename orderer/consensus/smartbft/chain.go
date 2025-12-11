@@ -654,3 +654,8 @@ func (c *chainACL) Evaluate(signatureSet []*protoutil.SignedData) error {
 	}
 	return nil
 }
+
+// OrderBatch is not supported in smartbft (stub implementation)
+func (c *BFTChain) OrderBatch(txns []*cb.Envelope, sequencerNumber uint64) error {
+	return fmt.Errorf("OrderBatch is not supported in smartbft consensus")
+}

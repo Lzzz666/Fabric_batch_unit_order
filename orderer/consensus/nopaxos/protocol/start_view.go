@@ -17,6 +17,17 @@ package protocol
 import "fmt"
 
 func (s *NOPaxos) handleStartView(request *StartView) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleStartViewSimplified(request)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	fmt.Println("=====handleStartView=====")
 	s.logger.ReceiveFrom("StartView", request, request.Sender)
 
@@ -88,7 +99,7 @@ func (s *NOPaxos) handleStartView(request *StartView) {
 
 		// 如果本節點是新 leader，設置 canCommit 標誌，允許開始打包區塊
 		if s.getLeader(s.viewID) == s.cluster.Member() {
-			s.canCommit = true
+			// s.canCommit = true
 			fmt.Println("=====New leader canCommit set to true=====")
 		}
 
@@ -117,6 +128,17 @@ func (s *NOPaxos) handleStartView(request *StartView) {
 }
 
 func (s *NOPaxos) handleViewRepair(request *ViewRepair) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleViewRepairSimplified(request)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	fmt.Println("=====handleViewRepair=====")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -160,6 +182,17 @@ func (s *NOPaxos) handleViewRepair(request *ViewRepair) {
 }
 
 func (s *NOPaxos) handleViewRepairReply(reply *ViewRepairReply) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleViewRepairReplySimplified(reply)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	fmt.Println("=====handleViewRepairReply=====")
 	// If the request views do not match, ignore the reply
 	if s.viewID.SessionNum != reply.ViewID.SessionNum || s.viewID.LeaderNum != reply.ViewID.LeaderNum {
@@ -207,7 +240,7 @@ func (s *NOPaxos) handleViewRepairReply(reply *ViewRepairReply) {
 
 	// 如果本節點是新 leader，設置 canCommit 標誌，允許開始打包區塊
 	if s.getLeader(s.viewID) == s.cluster.Member() {
-		s.canCommit = true
+		// s.canCommit = true
 		fmt.Println("=====New leader canCommit set to true (after ViewRepair)=====")
 	}
 

@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package multichannel
 
 import (
+	"fmt"
 	"sync"
 
 	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
@@ -63,7 +64,10 @@ func newBlockWriter(lastBlock *cb.Block, support blockWriterSupport) *BlockWrite
 
 // CreateNextBlock creates a new block with the next block number, and the given contents.
 func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
+	// 這裡的 previousBlockHash 是上一個區塊的 hash 原本存在 bw 中
+	fmt.Println("[lzzz debug] bw.lastBlock.Header: ", bw.lastBlock.Header)
 	previousBlockHash := protoutil.BlockHeaderHash(bw.lastBlock.Header)
+	fmt.Println("[lzzz debug] previousBlockHash: ", previousBlockHash)
 
 	data := &cb.BlockData{
 		Data: make([][]byte, len(messages)),
@@ -160,11 +164,15 @@ func (bw *BlockWriter) WriteConfigBlock(block *cb.Block, encodedMetadataValue []
 // then release the lock.  This allows the calling thread to begin assembling the next block
 // before the commit phase is complete.
 func (bw *BlockWriter) WriteBlock(block *cb.Block, encodedMetadataValue []byte) {
+	fmt.Println("[lzzz debug] WriteBlock, acquire lock")
 	bw.committingBlock.Lock()
+	fmt.Println("[lzzz debug] WriteBlock, lock acquired")
 	bw.lastBlock = block
-
 	go func() {
-		defer bw.committingBlock.Unlock()
+		defer func() {
+			bw.committingBlock.Unlock()
+			fmt.Println("[lzzz debug] commitBlock done, release lock")
+		}()
 		bw.commitBlock(encodedMetadataValue)
 	}()
 }
@@ -190,6 +198,7 @@ func (bw *BlockWriter) WriteBlockSync(block *cb.Block, encodedMetadataValue []by
 // commitBlock should only ever be invoked with the bw.committingBlock held
 // this ensures that the encoded config sequence numbers stay in sync
 func (bw *BlockWriter) commitBlock(encodedMetadataValue []byte) {
+	fmt.Println("[lzzz debug] commitBlock")
 	bw.addLastConfig(bw.lastBlock)
 
 	if len(bw.lastBlock.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES]) == 0 {
@@ -197,6 +206,7 @@ func (bw *BlockWriter) commitBlock(encodedMetadataValue []byte) {
 	}
 
 	err := bw.support.Append(bw.lastBlock)
+	fmt.Println("[lzzz debug] Append block")
 	if err != nil {
 		logger.Panicf("[channel: %s] Could not append block: %s", bw.support.ChannelID(), err)
 	}

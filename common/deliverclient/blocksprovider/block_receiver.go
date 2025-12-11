@@ -47,19 +47,29 @@ type BlockReceiver struct {
 
 // Start starts a goroutine that continuously receives blocks.
 func (br *BlockReceiver) Start() {
-	br.logger.Infof("BlockReceiver starting")
+	br.logger.Infof("🚀 [BlockReceiver] Starting - connecting to orderer: %s", br.endpoint.Address)
+
+	blockCount := 0
 	go func() {
 		for {
 			resp, err := br.deliverClient.Recv()
 			if err != nil {
-				br.logger.Warningf("Encountered an error reading from deliver stream: %s", err)
+				br.logger.Warningf("❌ [BlockReceiver] Error reading from deliver stream (orderer: %s): %s", br.endpoint.Address, err)
+				br.logger.Warningf("   Total blocks received before error: %d", blockCount)
 				close(br.recvC)
 				return
+			}
+
+			// 診斷：記錄收到的響應
+			blockCount++
+			if blockCount%10 == 0 || blockCount <= 5 {
+				br.logger.Infof("📦 [BlockReceiver] Received response #%d from orderer %s", blockCount, br.endpoint.Address)
 			}
 
 			select {
 			case br.recvC <- resp:
 			case <-br.stopC: // local stop signal
+				br.logger.Infof("🛑 [BlockReceiver] Stopped (total blocks received: %d)", blockCount)
 				close(br.recvC)
 				return
 			}
@@ -98,6 +108,7 @@ RecvLoop: // Loop until the endpoint is refreshed, or there is an error on the c
 			err = &errRefreshEndpoint{message: fmt.Sprintf("orderer endpoint `%s` has been refreshed, ", br.endpoint.Address)}
 			break RecvLoop
 		case response, ok := <-br.recvC:
+			// fmt.Println("[lzzz debug] response: ", response)
 			if !ok {
 				br.logger.Warningf("Orderer hung up without sending status")
 				err = errors.Errorf("orderer `%s` hung up without sending status", br.endpoint.Address)
@@ -127,6 +138,7 @@ RecvLoop: // Loop until the endpoint is refreshed, or there is an error on the c
 }
 
 func (br *BlockReceiver) processMsg(msg *orderer.DeliverResponse) (uint64, *common.Config, error) {
+	fmt.Println("[lzzz debug] processMsg")
 	switch t := msg.GetType().(type) {
 	case *orderer.DeliverResponse_Status:
 		if t.Status == common.Status_SUCCESS {
@@ -136,16 +148,17 @@ func (br *BlockReceiver) processMsg(msg *orderer.DeliverResponse) (uint64, *comm
 		return 0, nil, errors.Errorf("received bad status %v from orderer", t.Status)
 	case *orderer.DeliverResponse_Block:
 		blockNum := t.Block.Header.Number
+		fmt.Println("[lzzz debug] blockNum: ", blockNum)
 
 		if err := br.updatableBlockVerifier.VerifyBlock(t.Block); err != nil {
 			return 0, nil, errors.WithMessagef(err, "block [%d] from orderer [%s] could not be verified", blockNum, br.endpoint.String())
 		}
-
+		fmt.Println("[lzzz debug] VerifyBlock success")
 		err := br.blockHandler.HandleBlock(br.channelID, t.Block)
 		if err != nil {
 			return 0, nil, errors.WithMessagef(err, "block [%d] from orderer [%s] could not be handled", blockNum, br.endpoint.String())
 		}
-
+		fmt.Println("[lzzz debug] HandleBlock success")
 		br.logger.Debugf("Handled block %d", blockNum)
 
 		var channelConfig *common.Config
@@ -163,9 +176,9 @@ func (br *BlockReceiver) processMsg(msg *orderer.DeliverResponse) (uint64, *comm
 			}
 			br.logger.Infof("Updated config block %d", blockNum)
 		}
-
+		fmt.Println("[lzzz debug] UpdateConfig success")
 		br.updatableBlockVerifier.UpdateBlockHeader(t.Block)
-
+		fmt.Println("[lzzz debug] UpdateBlockHeader success")
 		return blockNum, channelConfig, nil
 	default:
 		return 0, nil, errors.Errorf("unknown message type: %T, message: %+v", t, msg)

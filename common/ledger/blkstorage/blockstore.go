@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package blkstorage
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
@@ -42,6 +43,7 @@ func newBlockStore(id string, conf *Conf, indexConfig *IndexConfig,
 
 // AddBlock adds a new block
 func (store *BlockStore) AddBlock(block *common.Block) error {
+	fmt.Println("[lzzz debug] AddBlock")
 	// track elapsed time to collect block commit time
 	startBlockCommit := time.Now()
 	result := store.fileMgr.addBlock(block)

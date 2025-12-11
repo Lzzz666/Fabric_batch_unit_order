@@ -8,6 +8,7 @@ package state
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -542,6 +543,7 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 		select {
 		// Wait for notification that next seq has arrived
 		case <-s.payloads.Ready():
+			fmt.Println("[lzzz debug] ready to deliverPayloads")
 			s.logger.Debugf("[%s] Ready to transfer payloads (blocks) to the ledger, next block number is = [%d]", s.chainID, s.payloads.Next())
 			// Collect all subsequent payloads
 			for payload := s.payloads.Pop(); payload != nil; payload = s.payloads.Pop() {
@@ -566,6 +568,7 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 						continue
 					}
 				}
+				fmt.Println("[lzzz debug] ready to commitBlock in deliverPayloads")
 				if err := s.commitBlock(rawBlock, p); err != nil {
 					if executionErr, isExecutionErr := err.(*vsccErrors.VSCCExecutionFailureError); isExecutionErr {
 						s.logger.Errorf("Failed executing VSCC due to %v. Aborting chain processing", executionErr)
@@ -749,6 +752,10 @@ func (s *GossipStateProviderImpl) AddPayload(payload *proto.Payload) error {
 // the block is sent into the payloads buffer.
 // Else - it may drop the block, if the payload buffer is too full.
 func (s *GossipStateProviderImpl) addPayload(payload *proto.Payload, blockingMode bool) error {
+	fmt.Println("[lzzz debug] ready to addPayload")
+	fmt.Println("[lzzz debug] blockingMode: ", blockingMode)
+	fmt.Println("[lzzz debug] s.payloads.Size(): ", s.payloads.Size())
+	fmt.Println("[lzzz debug] s.config.StateBlockBufferSize: ", s.config.StateBlockBufferSize)
 	if payload == nil {
 		return errors.New("Given payload is nil")
 	}

@@ -248,6 +248,7 @@ func (s *DeliverServer) DeliverFiltered(srv peer.Deliver_DeliverFilteredServer) 
 // Deliver sends a stream of blocks to a client after commitment
 func (s *DeliverServer) Deliver(srv peer.Deliver_DeliverServer) (err error) {
 	logger.Debugf("Starting new Deliver handler")
+	logger.Infof("[lzzz debug] Deliver request: %v", srv)
 	defer dumpStacktraceOnPanic()
 	// getting policy checker based on resources.Event_Block resource name
 	deliverServer := &deliver.Server{

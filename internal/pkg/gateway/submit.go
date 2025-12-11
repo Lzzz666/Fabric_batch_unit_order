@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,83 @@ import (
 var serverAddrStr = os.Getenv("SERVER_ADDR")
 var count uint64 = 0
 
+// SimpleBatchCollector 簡單的批次收集器
+type SimpleBatchCollector struct {
+	mu            sync.Mutex
+	buffer        []*common.Envelope
+	batchSize     int
+	timeout       time.Duration
+	timer         *time.Timer
+	sendFunc      func([]*common.Envelope) error
+	batchCount    uint64
+	totalTxnCount uint64
+}
+
+// NewSimpleBatchCollector 創建簡單批次收集器
+func NewSimpleBatchCollector(batchSize int, timeout time.Duration, sendFunc func([]*common.Envelope) error) *SimpleBatchCollector {
+	return &SimpleBatchCollector{
+		buffer:    make([]*common.Envelope, 0, batchSize),
+		batchSize: batchSize,
+		timeout:   timeout,
+		sendFunc:  sendFunc,
+	}
+}
+
+// Add 添加交易到批次
+func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
+	sbc.mu.Lock()
+	defer sbc.mu.Unlock()
+
+	// 添加到緩衝區
+	sbc.buffer = append(sbc.buffer, txn)
+	sbc.totalTxnCount++
+
+	// 如果是第一筆交易，啟動計時器
+	if len(sbc.buffer) == 1 {
+		sbc.timer = time.AfterFunc(sbc.timeout, func() {
+			sbc.mu.Lock()
+			defer sbc.mu.Unlock()
+			if len(sbc.buffer) > 0 {
+				fmt.Printf("⏰ [Batch] Timeout triggered, flushing %d txns\n", len(sbc.buffer))
+				sbc.flushLocked()
+			}
+		})
+	}
+
+	// 檢查是否達到批次大小
+	if len(sbc.buffer) >= sbc.batchSize {
+		return sbc.flushLocked()
+	}
+
+	return nil
+}
+
+// flushLocked 發送當前批次（需持有鎖）
+func (sbc *SimpleBatchCollector) flushLocked() error {
+	if len(sbc.buffer) == 0 {
+		return nil
+	}
+
+	// 停止計時器
+	if sbc.timer != nil {
+		sbc.timer.Stop()
+		sbc.timer = nil
+	}
+
+	// 複製批次
+	batch := make([]*common.Envelope, len(sbc.buffer))
+	copy(batch, sbc.buffer)
+
+	// 清空緩衝區
+	sbc.buffer = sbc.buffer[:0]
+	sbc.batchCount++
+
+	fmt.Printf("📦 [Batch] Flushing batch #%d with %d txns\n", sbc.batchCount, len(batch))
+
+	// 發送批次
+	return sbc.sendFunc(batch)
+}
+
 // Submit will send the signed transaction to the ordering service. The response indicates whether the transaction was
 // successfully received by the orderer. This does not imply successful commit of the transaction, only that is has
 // been delivered to the orderer.
@@ -35,6 +113,24 @@ func (gs *Server) Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.Su
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "a submit request is required")
 	}
+	/*
+		type SubmitRequest struct {
+			state         protoimpl.MessageState
+			sizeCache     protoimpl.SizeCache
+			unknownFields protoimpl.UnknownFields
+
+			TransactionId string `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+			ChannelId string `protobuf:"bytes,2,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+			PreparedTransaction *common.Envelope `protobuf:"bytes,3,opt,name=prepared_transaction,json=preparedTransaction,proto3" json:"prepared_transaction,omitempty"`
+		}
+	*/
+
+	// TransactionId	bytes,1	string	交易的唯一識別符。標識要提交的特定交易。
+	// ChannelId	bytes,2	string	通道/鏈的識別符。指定此請求應提交到哪個特定的區塊鏈通道或分佈式帳本。
+	// PreparedTransaction	bytes,3	*common.Envelope	準備好的交易數據。這是一個指向 common.Envelope 結構的指針，其中包含了 已簽名的、**經背書（Endorsed）**的交易提案響應，這是實際要寫入帳本的數據包。
+
+	// 在這裡製作 txn
+	// fmt.Printf("[lz debug] request: %x\n", request)
 	txn := request.GetPreparedTransaction()
 	if txn == nil {
 		return nil, status.Error(codes.InvalidArgument, "a prepared transaction is required")
@@ -52,14 +148,18 @@ func (gs *Server) Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.Su
 	}
 
 	logger := logger.With("txID", request.TransactionId)
-	config := gs.getChannelConfig(request.ChannelId)
+	fmt.Printf("[lz debug] txID: %s\n", request.TransactionId)
+
+	config := gs.getChannelConfig(request.ChannelId) //  config 基本上大家都一樣？因為只有一個 channel (mychannel)
 	oc, ok := config.OrdererConfig()
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "failed to create block deliverer for channel `%s`, missing OrdererConfig", request.ChannelId)
 	}
 	if oc.ConsensusType() == "BFT" {
+		fmt.Printf("[lz debug] submitBFT\n")
 		return gs.submitBFT(ctx, orderers, txn, clusterSize, logger)
 	} else {
+		fmt.Printf("[lz debug] submitNonBFT\n")
 		return gs.submitNonBFT(ctx, orderers, txn, logger)
 	}
 }
@@ -169,12 +269,30 @@ func (gs *Server) submitNonBFT(ctx context.Context, orderers []*orderer, txn *co
 	logger.Infow("Sending transaction to orderer", "Count:", count)
 	count++
 
-	err := gs.broadcastByUDP(txn)
+	// 初始化 batch collector（lazy initialization）
+	if gs.batchCollector == nil {
+		batchSize := 100                      // 批次大小：100 筆交易
+		batchTimeout := 10 * time.Millisecond // 超時：10ms
+
+		fmt.Printf("🚀 [Batch] 初始化批次收集器: size=%d, timeout=%v\n", batchSize, batchTimeout)
+
+		gs.batchCollector = NewSimpleBatchCollector(
+			batchSize,
+			batchTimeout,
+			func(batch []*common.Envelope) error {
+				return gs.broadcastBatchByUDP(batch)
+			},
+		)
+	}
+	// fmt.Printf("[lz debug] txn: %x\n", txn)
+	// 使用批次收集器添加交易
+	err := gs.batchCollector.Add(txn)
 	if err != nil {
-		return &gp.SubmitResponse{}, err
+		logger.Warnw("Failed to add transaction to batch", "error", err)
+		return nil, err
 	}
 
-	return nil, nil
+	return &gp.SubmitResponse{}, nil
 }
 
 func (gs *Server) broadcast(ctx context.Context, orderer *orderer, txn *common.Envelope) (*ab.BroadcastResponse, error) {
@@ -195,7 +313,102 @@ func (gs *Server) broadcast(ctx context.Context, orderer *orderer, txn *common.E
 	return response, nil
 }
 
+// broadcastBatchByUDP 批次發送交易到 sequencer
+// 將多個交易打包成一個 batch，一次性發送
+func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("empty batch")
+	}
+
+	fmt.Printf("📤 [BatchUDP] Broadcasting batch of %d transactions\n", len(batch))
+	startTime := time.Now()
+
+	// 1. 序列化所有交易
+	txnDataList := make([][]byte, len(batch))
+	totalDataSize := 0
+
+	for i, txn := range batch {
+		data, err := proto.Marshal(txn)
+		if err != nil {
+			return fmt.Errorf("failed to marshal transaction %d: %w", i, err)
+		}
+		txnDataList[i] = data
+		totalDataSize += len(data)
+	}
+
+	// 2. 計算總包大小
+	// 2 (front reserve) + 2 (batch flag) + 4 (txn count) + N*(4 + data_len) + 4 (seq reserve)
+	batchPacketSize := 2 + 2 + 4 + (len(batch) * 4) + totalDataSize + 4
+	batchPacket := make([]byte, 0, batchPacketSize)
+
+	// 3. 前置保留位 (2 bytes)
+	batchPacket = append(batchPacket, 0x00, 0x00)
+
+	// 4. Batch 標記 (2 bytes): 0xFF 0xFF 表示這是一個 batch
+	batchPacket = append(batchPacket, 0xFF, 0xFF)
+
+	// 5. 交易數量 (4 bytes, big-endian)
+	txnCount := uint32(len(batch))
+	batchPacket = append(batchPacket,
+		byte(txnCount>>24),
+		byte(txnCount>>16),
+		byte(txnCount>>8),
+		byte(txnCount))
+
+	// 6. 依次添加每個交易 (長度 + 數據)
+	for _, txnData := range txnDataList {
+		txnLen := uint32(len(txnData))
+
+		// 交易長度 (4 bytes, big-endian)
+		batchPacket = append(batchPacket,
+			byte(txnLen>>24),
+			byte(txnLen>>16),
+			byte(txnLen>>8),
+			byte(txnLen))
+
+		// 交易數據
+		batchPacket = append(batchPacket, txnData...)
+	}
+
+	// 7. 後置 sequencer 預留位 (4 bytes) - sequencer 會填入 sequencer number
+	batchPacket = append(batchPacket, 0x00, 0x00, 0x00, 0x00)
+
+	fmt.Printf("📊 [BatchUDP] Packet: %d bytes, %d txns, avg %d bytes/txn\n",
+		len(batchPacket), len(batch), len(batchPacket)/len(batch))
+
+	// ⚠️ UDP 大封包警告
+	if len(batchPacket) > 8192 {
+		fmt.Printf("⚠️  [BatchUDP] 警告: 封包大小 %d bytes 超過 8KB，可能會分片或丟失！\n", len(batchPacket))
+	}
+
+	// 8. 發送批次包
+	n, err := gs.UdpGateway.Write(batchPacket)
+	if err == nil && n != len(batchPacket) {
+		fmt.Printf("⚠️  [BatchUDP] 部分發送: 只發送了 %d/%d bytes\n", n, len(batchPacket))
+	}
+	if err != nil {
+		// 嘗試重連
+		if err := gs.reconnect(); err != nil {
+			return fmt.Errorf("failed to reconnect: %w", err)
+		}
+
+		// 重試發送
+		_, err = gs.UdpGateway.Write(batchPacket)
+		if err != nil {
+			return fmt.Errorf("failed to resend batch after reconnecting: %w", err)
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(len(batch)) / elapsed.Seconds()
+	fmt.Printf("✅ [BatchUDP] Sent %d txns in %v (%.0f txn/s)\n",
+		len(batch), elapsed, throughput)
+
+	return nil
+}
+
 func (gs *Server) broadcastByUDP(txn *common.Envelope) error {
+	fmt.Printf("[lz debug] broadcastByUDP\n")
 	data, err := proto.Marshal(txn)
 	if err != nil {
 		fmt.Println("Failed to marshal envelope:", err)

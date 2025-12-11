@@ -68,9 +68,18 @@ func (s *NOPaxos) startLeaderChange() {
 	go s.resetTimeout()
 }
 
-
 func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
 
+	if useSimplified {
+		s.handleViewChangeRequestSimplified(request)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	s.logger.ReceiveFrom("ViewChangeRequest", request, request.Sender)
 
 	s.mu.Lock()
@@ -95,7 +104,7 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 		s.mu.Unlock()
 		return
 	}
-	
+
 	// 記錄之前的狀態，用於判斷是否需要廣播
 	previousStatus := s.status
 
@@ -106,7 +115,6 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 
 	// Reset the view changes
 	s.viewChanges = make(map[MemberID]*ViewChange)
-
 
 	// 修正：Create a bloom filter for NO-OP slots (empty slots)
 	// NO-OP filter 應該標記**沒有**資料的 slot
@@ -170,7 +178,6 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 	s.logger.SendTo("ViewChange", viewChange, leader)
 	go s.send(viewChangeMessage, leader)
 
-
 	// 只有在首次進入 view change 時才廣播 ViewChangeRequest（避免無窮遞迴）
 	if previousStatus != StatusViewChange {
 		// Send a ViewChangeRequest to all other replicas (不包括自己)
@@ -188,16 +195,10 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 	go s.resetTimeout()
 }
 
-
-
-
 // 我要自己寫一個跟 peer 拉 log 的 view change function
 // func (s *NOPaxos) handleViewChangePullLogFromPeer() {
 // 	// TODO: 實作這個 function
 // }
-
-
-
 
 // 看一下這裡的流程
 // 1. 收到 ViewChange 消息
@@ -213,11 +214,21 @@ func (s *NOPaxos) handleViewChangeRequest(request *ViewChangeRequest) {
 // 11. 發送 StartView 消息
 
 func (s *NOPaxos) handleViewChange(request *ViewChange) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleViewChangeSimplified(request)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	s.logger.ReceiveFrom("ViewChange", request, request.Sender)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 
 	// If the view IDs do not match, ignore the request
 	if s.viewID.LeaderNum != request.ViewID.LeaderNum || s.viewID.SessionNum != request.ViewID.SessionNum {
@@ -243,7 +254,6 @@ func (s *NOPaxos) handleViewChange(request *ViewChange) {
 	// Add the view change to the set of view changes
 
 	s.viewChanges[request.Sender] = request
-
 
 	localViewChanged := false
 	viewChanges := make([]*ViewChange, 0, len(s.viewChanges))
@@ -433,6 +443,17 @@ func (s *NOPaxos) sendStartView(newMessageID MessageID) {
 }
 
 func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleViewChangeRepairSimplified(request)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	fmt.Println("=====handleViewChangeRepair=====")
 	fmt.Println("=====From:", request.Sender, "for slots:", request.SlotNums, "=====")
 
@@ -487,6 +508,17 @@ func (s *NOPaxos) handleViewChangeRepair(request *ViewChangeRepair) {
 }
 
 func (s *NOPaxos) handleViewChangeRepairReply(reply *ViewChangeRepairReply) {
+	// 根據配置選擇使用簡化版或完整版
+	s.mu.RLock()
+	useSimplified := s.useSimplifiedViewChange
+	s.mu.RUnlock()
+
+	if useSimplified {
+		s.handleViewChangeRepairReplySimplified(reply)
+		return
+	}
+
+	// 以下是完整版的邏輯
 	fmt.Println("=====handleViewChangeRepairReply=====")
 	fmt.Println("=====From:", reply.Sender, "with slots:", reply.SlotNums, "=====")
 

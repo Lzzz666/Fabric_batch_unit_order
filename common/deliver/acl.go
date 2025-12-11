@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 // ExpiresAtFunc is used to extract the time at which an identity expires.
@@ -72,5 +74,31 @@ func (ac *SessionAccessControl) Evaluate() error {
 	}
 
 	ac.usedAtLeastOnce = true
+
+	// Allow OrdererMSP to bypass Application/Readers policy check
+	// This is needed for orderers to fetch blocks from other orderers
+	if isOrdererMSP(ac.envelope) {
+		logger.Infof("[channel: %s] Allowing OrdererMSP to bypass policy check", ac.channelID)
+		return nil
+	}
+
 	return ac.policyChecker.CheckPolicy(ac.envelope, ac.channelID)
+}
+
+// isOrdererMSP checks if the envelope creator is from OrdererMSP
+func isOrdererMSP(env *common.Envelope) bool {
+	signedData, err := protoutil.EnvelopeAsSignedData(env)
+	if err != nil || len(signedData) == 0 {
+		return false
+	}
+
+	sID := &msp.SerializedIdentity{}
+	if err := proto.Unmarshal(signedData[0].Identity, sID); err != nil {
+		return false
+	}
+
+	// Check if MSP ID is OrdererMSP (or contains "Orderer")
+	return sID.Mspid == "OrdererMSP" ||
+		sID.Mspid == "OrdererOrg" ||
+		len(sID.Mspid) >= 7 && sID.Mspid[:7] == "Orderer"
 }

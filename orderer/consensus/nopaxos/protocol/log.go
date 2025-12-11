@@ -130,10 +130,7 @@ func (l *Log) PrintLog(prefix string) {
 	// Print entries in slot order
 	for slot := l.firstSlotNum; slot <= l.lastSlotNum; slot++ {
 		entry := l.entries[slot]
-		if entry != nil {
-			fmt.Printf("Slot[%d]: MessageNum=%d, ConfigSeq=%d\n", // 這裡的 MessageNum 是 client 的 message num??
-				slot, entry.MessageNum, entry.configSeq)
-		} else {
+		if entry == nil {
 			fmt.Printf("Slot[%d]: <empty/gap>\n", slot)
 		}
 	}

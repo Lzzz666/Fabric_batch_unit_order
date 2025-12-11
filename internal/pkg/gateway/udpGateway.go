@@ -20,6 +20,11 @@ func (gs *Server) connect() error {
 	}
 	fmt.Println("Connected to server")
 
+	// 🔥 設置 UDP 寫緩衝區，避免大封包丟失
+	if err := conn.SetWriteBuffer(16 * 1024 * 1024); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to set write buffer: %v\n", err)
+	}
+
 	// Set the TTL on the socket
 	rawConn, err := conn.SyscallConn()
 	if err != nil {

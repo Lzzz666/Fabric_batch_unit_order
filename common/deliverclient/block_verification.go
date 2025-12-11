@@ -9,6 +9,7 @@ package deliverclient
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/hyperledger/fabric-lib-go/bccsp"
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
@@ -241,34 +242,35 @@ func (a *BlockVerificationAssistant) UpdateConfig(configBlock *common.Block) err
 
 // VerifyBlock checks block integrity and its relation to the chain, and verifies the signatures.
 func (a *BlockVerificationAssistant) VerifyBlock(block *common.Block) error {
+	fmt.Println("[lzzz debug] VerifyBlock")
 	if err := a.verifyHeader(block); err != nil {
 		return err
 	}
-
+	fmt.Println("[lzzz debug] verifyHeader success")
 	if err := a.verifyMetadata(block); err != nil {
 		return err
 	}
-
+	fmt.Println("[lzzz debug] verifyMetadata success")
 	dataHash, err := protoutil.BlockDataHash(block.Data)
 	if err != nil {
 		return errors.Wrapf(err, "failed to verify transactions are well formed for block with id [%d] on channel [%s]", block.Header.Number, a.channelID)
 	}
-
+	fmt.Println("[lzzz debug] BlockDataHash success")
 	// Verify that Header.DataHash is equal to the hash of block.Data
 	// This is to ensure that the header is consistent with the data carried by this block
 	if !bytes.Equal(dataHash, block.Header.DataHash) {
 		return errors.Errorf("Header.DataHash is different from Hash(block.Data) for block with id [%d] on channel [%s]; Header: %s, Data: %s",
 			block.Header.Number, a.channelID, hex.EncodeToString(block.Header.DataHash), hex.EncodeToString(dataHash))
 	}
-
+	fmt.Println("[lzzz debug] sigVerifierFunc success")
 	err = a.sigVerifierFunc(block.Header, block.Metadata)
 	if err != nil {
 		return err
 	}
-
+	fmt.Println("[lzzz debug] UpdateBlockHeader success")
 	a.lastBlockHeader = block.Header
 	a.lastBlockHeaderHash = protoutil.BlockHeaderHash(block.Header)
-
+	fmt.Println("[lzzz debug] UpdateBlockHeaderHash success")
 	return nil
 }
 

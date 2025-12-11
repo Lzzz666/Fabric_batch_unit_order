@@ -54,6 +54,9 @@ func NewNOPaxos(cluster Cluster, config *config.ProtocolConfig, deliverChan chan
 		gapCommitReps:        make(map[MemberID]*GapCommitReply),
 		syncReps:             make(map[MemberID]*SyncReply),
 		deliverChan:          deliverChan,
+
+		// 預設使用簡化版 view change（適合有 peer sync 的場景）
+		useSimplifiedViewChange: true, // false = 完整版, true = 簡化版
 	}
 	nopaxos.start()
 	return nopaxos
@@ -127,6 +130,9 @@ type NOPaxos struct {
 	deliverChan          chan []struct{}
 	pendingTxs           []*message
 	canCommit            bool // 標記 leader 是否已寫入 slot
+
+	// View Change 模式選擇：true = 簡化版（僅切換 leader），false = 完整版（含 log repair）
+	useSimplifiedViewChange bool
 }
 
 func (s *NOPaxos) start() {
@@ -311,10 +317,12 @@ func (s *NOPaxos) send(message *ReplicaMessage, member MemberID) {
 	if stream, err := s.cluster.GetStream(member); err == nil {
 		err := stream.Send(message)
 		if err != nil {
-			s.logger.Error("Failed to send to %s: %v", member, err)
+			// 降低日誌級別，避免大量錯誤消息
+			s.logger.Debug("Failed to send to %s: %v (node may be offline)", member, err)
 		}
 	} else {
-		s.logger.Error("Failed to open stream to %s: %v", member, err)
+		// 節點不可用時只記錄 debug 日誌，不影響正常運行
+		s.logger.Debug("Failed to open stream to %s: %v (node may be offline)", member, err)
 	}
 }
 
@@ -342,11 +350,39 @@ func (s *NOPaxos) GetLogStatistics() (totalSlots int, actualEntries int, gaps in
 	return s.log.GetGapStatistics()
 }
 
-// CanCommit 檢查並重置 canCommit 標誌（線程安全）
 func (s *NOPaxos) CanCommit() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := s.canCommit
 	s.canCommit = false // 重置標誌
 	return result
+}
+
+// SetSessionMessageNum 設置 session message number（線程安全）
+// 用於 view change 後從 peer 同步區塊時更新協議狀態
+func (s *NOPaxos) SetSessionMessageNum(messageNum MessageID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionMessageNum = messageNum
+}
+
+// GetSessionMessageNum 獲取當前 session message number（線程安全）
+func (s *NOPaxos) GetSessionMessageNum() MessageID {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sessionMessageNum
+}
+
+// SetSimplifiedViewChange 設置是否使用簡化版本的 view change
+// simplified = true: 使用簡化版（僅切換 leader，依賴 peer sync）
+// simplified = false: 使用完整版（包含 log repair 邏輯）
+func (s *NOPaxos) SetSimplifiedViewChange(simplified bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.useSimplifiedViewChange = simplified
+	if simplified {
+		fmt.Println("✓ View Change 模式: 簡化版（Simplified - 依賴 Peer Sync）")
+	} else {
+		fmt.Println("✓ View Change 模式: 完整版（Full - 含 Log Repair）")
+	}
 }

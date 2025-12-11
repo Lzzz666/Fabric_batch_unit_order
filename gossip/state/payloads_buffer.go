@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package state
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -88,6 +89,10 @@ func (b *PayloadsBufferImpl) Push(payload *proto.Payload) {
 	b.buf[seqNum] = payload
 
 	// Send notification that next sequence has arrived
+	fmt.Println("[lzzz debug] ready to send notification that next sequence has arrived")
+	fmt.Println("[lzzz debug] seqNum: ", seqNum)
+	fmt.Println("[lzzz debug] b.next: ", b.next)
+	fmt.Println("[lzzz debug] len(b.readyChan): ", len(b.readyChan))
 	if seqNum == b.next && len(b.readyChan) == 0 {
 		b.readyChan <- struct{}{}
 	}

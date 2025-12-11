@@ -35,6 +35,7 @@ type Server struct {
 	ledgerProvider   ledger.Provider
 	getChannelConfig channelConfigGetter
 	UdpGateway       *net.UDPConn
+	batchCollector   *SimpleBatchCollector // 批次收集器
 }
 
 type EndorserServerAdapter struct {

@@ -8,6 +8,7 @@ package blocksprovider
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
@@ -100,29 +101,38 @@ func (dr *DeliveryRequester) SeekInfoNewestHeader() (*common.Envelope, error) {
 }
 
 func (dr *DeliveryRequester) Connect(seekInfoEnv *common.Envelope, endpoint *orderers.Endpoint) (orderer.AtomicBroadcast_DeliverClient, func(), error) {
+	fmt.Printf("📞 [Peer→Orderer] 嘗試連接到 orderer: %s\n", endpoint.Address)
+
 	conn, err := dr.dialer.Dial(endpoint.Address, endpoint.RootCerts)
 	if err != nil {
+		fmt.Printf("❌ [Peer→Orderer] Dial 失敗 (%s): %v\n", endpoint.Address, err)
 		return nil, nil, errors.WithMessagef(err, "could not dial endpoint '%s'", endpoint.Address)
 	}
+	fmt.Printf("✅ [Peer→Orderer] Dial 成功: %s\n", endpoint.Address)
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	deliverClient, err := dr.deliverStreamer.Deliver(ctx, conn)
 	if err != nil {
+		fmt.Printf("❌ [Peer→Orderer] 創建 deliver client 失敗 (%s): %v\n", endpoint.Address, err)
 		_ = conn.Close()
 		ctxCancel()
 		return nil, nil, errors.WithMessagef(err, "could not create deliver client to endpoints '%s'", endpoint.Address)
 	}
+	fmt.Printf("✅ [Peer→Orderer] Deliver client 創建成功: %s\n", endpoint.Address)
 
 	err = deliverClient.Send(seekInfoEnv)
 	if err != nil {
+		fmt.Printf("❌ [Peer→Orderer] 發送 seek info 失敗 (%s): %v\n", endpoint.Address, err)
 		_ = deliverClient.CloseSend()
 		_ = conn.Close()
 		ctxCancel()
 		return nil, nil, errors.WithMessagef(err, "could not send deliver seek info handshake to '%s'", endpoint.Address)
 	}
+	fmt.Printf("✅ [Peer→Orderer] Seek info 發送成功，連接完全建立: %s\n", endpoint.Address)
 
 	cancelFunc := func() {
+		fmt.Printf("🔌 [Peer→Orderer] 關閉連接: %s\n", endpoint.Address)
 		_ = deliverClient.CloseSend()
 		ctxCancel()
 		_ = conn.Close()

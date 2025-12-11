@@ -8,6 +8,7 @@ package blocksprovider
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -208,7 +209,7 @@ func (d *Deliverer) DeliverBlocks() {
 		onSuccess := func(blockNum uint64, channelConfig *cb.Config) {
 			failureCounter = 0
 			totalDuration = time.Duration(0)
-
+			fmt.Println("[lzzz debug] onBlockProcessingSuccess")
 			if channelConfig != nil {
 				globalAddresses, orgAddresses, err := extractAddresses(d.ChannelID, channelConfig, d.CryptoProvider)
 				if err != nil {

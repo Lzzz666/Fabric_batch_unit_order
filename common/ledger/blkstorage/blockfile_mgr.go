@@ -280,6 +280,7 @@ func (mgr *blockfileMgr) moveToNextFile() {
 }
 
 func (mgr *blockfileMgr) addBlock(block *common.Block) error {
+	fmt.Println("[lzzz debug] addBlock 負責將「共識層生成的新區塊」實際寫入檔案系統中")
 	bcInfo := mgr.getBlockchainInfo()
 	if block.Header.Number != bcInfo.Height {
 		return errors.Errorf(

@@ -1634,3 +1634,8 @@ func (c *Chain) checkForEvictionNCertRotation(env *common.Envelope) bool {
 	c.logger.Debugf("Node %d is still part of the consenters set", c.raftID)
 	return false
 }
+
+// OrderBatch is not supported in etcdraft (stub implementation)
+func (c *Chain) OrderBatch(txns []*common.Envelope, sequencerNumber uint64) error {
+	return fmt.Errorf("OrderBatch is not supported in etcdraft consensus")
+}

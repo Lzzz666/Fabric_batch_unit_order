@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package multichannel
 
 import (
+	"fmt"
+
 	"github.com/hyperledger/fabric-lib-go/bccsp"
 	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
@@ -48,8 +50,9 @@ func newChainSupport(
 	blockcutterMetrics *blockcutter.Metrics,
 	bccsp bccsp.BCCSP,
 ) (*ChainSupport, error) {
+	fmt.Println("[lzzz debug] newChainSupport")
 	// Read in the last block and metadata for the channel
-	lastBlock := blockledger.GetBlock(ledgerResources, ledgerResources.Height()-1)
+	lastBlock := blockledger.GetBlock(ledgerResources, ledgerResources.Height()-1) // 這裡的 lastBlock 是上一個區塊，存在 orderer 本地 ledger 中
 	metadata, err := protoutil.GetConsenterMetadataFromBlock(lastBlock)
 	// Assuming a block created with cb.NewBlock(), this should not
 	// error even if the orderer metadata is an empty byte slice
