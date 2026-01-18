@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package sequencer;
+
+option go_package = "github.com/hyperledger/fabric/sequencer";
+
+// SequencerService 提供批次交易排序服務
+service SequencerService {
+    // SubmitBatch 提交一個批次交易到 sequencer
+    rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+}
+
+// SubmitBatchRequest 批次提交請求
+message SubmitBatchRequest {
+    // 批次數據：包含多個序列化的交易
+    // 格式：2 (front reserve) + 2 (batch flag) + 4 (txn count) + N*(4 + data) + 4 (seq reserve)
+    bytes batch_data = 1;
+}
+
+// SubmitBatchResponse 批次提交響應
+message SubmitBatchResponse {
+    // 是否成功
+    bool success = 1;
+    // 錯誤信息（如果失敗）
+    string error_message = 2;
+    // Sequencer 分配的序號（如果成功）
+    uint32 sequence_number = 3;
+}
+

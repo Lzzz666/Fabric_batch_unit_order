@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
 	"sync"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var wgg sync.WaitGroup
@@ -41,39 +46,76 @@ func main() {
 	ports := [9]string{"3073", "4073", "5073", "6073", "7073", "9073", "10073", "8073"}
 	addrs := [9]string{"localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost"}
 
-	// 🔥 預先創建並復用 UDP 連接，避免每次循環都創建新連接
-	ordererConns := make([]*net.UDPConn, 8)
-	for i := 8 - broadcastCount; i < 8; i++ {
-		ordererAddress := net.JoinHostPort(addrs[i], ports[i])
-		ordererServerAddr, err := net.ResolveUDPAddr("udp", ordererAddress)
-		if err != nil {
-			fmt.Printf("❌ [Sequencer] 解析地址失敗 (%s): %v\n", ordererAddress, err)
-			continue
-		}
+	// 檢查是否使用 gRPC 發送到 orderer
+	useGRPC := true
 
-		ordererConn, err := net.DialUDP("udp", nil, ordererServerAddr)
-		if err != nil {
-			fmt.Printf("❌ [Sequencer] 連接失敗 (%s): %v\n", ordererAddress, err)
-			continue
-		}
+	var ordererConns []*net.UDPConn
+	var grpcOrdererConns []*grpcOrdererConn
 
-		// 🔥 設置發送緩衝區，避免丟包
-		if err := ordererConn.SetWriteBuffer(64 * 1024 * 1024); err != nil {
-			fmt.Printf("⚠️  [Sequencer] 設置發送緩衝區失敗 (%s): %v\n", ordererAddress, err)
-		}
+	if useGRPC {
+		// 🔥 預先創建並復用 gRPC 連接
+		fmt.Printf("🔌 [Sequencer] 使用 gRPC 模式，正在預先創建連接...\n")
+		grpcOrdererConns = createGRPCConnections(broadcastCount)
+		ordererConns = make([]*net.UDPConn, 8) // 保持為 nil，因為不使用 UDP
+	} else {
+		// 🔥 預先創建並復用 UDP 連接，避免每次循環都創建新連接
+		fmt.Printf("🔌 [Sequencer] 使用 UDP 模式，正在預先創建連接...\n")
+		ordererConns = make([]*net.UDPConn, 8)
+		for i := 8 - broadcastCount; i < 8; i++ {
+			ordererAddress := net.JoinHostPort(addrs[i], ports[i])
+			ordererServerAddr, err := net.ResolveUDPAddr("udp", ordererAddress)
+			if err != nil {
+				fmt.Printf("❌ [Sequencer] 解析地址失敗 (%s): %v\n", ordererAddress, err)
+				continue
+			}
 
-		ordererConns[i] = ordererConn
-		fmt.Printf("✅ [Sequencer] 已連接到 orderer %s\n", ordererAddress)
+			ordererConn, err := net.DialUDP("udp", nil, ordererServerAddr)
+			if err != nil {
+				fmt.Printf("❌ [Sequencer] 連接失敗 (%s): %v\n", ordererAddress, err)
+				continue
+			}
+
+			// 🔥 設置發送緩衝區，避免丟包
+			if err := ordererConn.SetWriteBuffer(64 * 1024 * 1024); err != nil {
+				fmt.Printf("⚠️  [Sequencer] 設置發送緩衝區失敗 (%s): %v\n", ordererAddress, err)
+			}
+
+			ordererConns[i] = ordererConn
+			fmt.Printf("✅ [Sequencer] 已連接到 orderer %s\n", ordererAddress)
+		}
 	}
 
 	// 🔥 確保程序退出時關閉所有連接
 	defer func() {
-		for i, conn := range ordererConns {
-			if conn != nil {
-				conn.Close()
-				fmt.Printf("🔒 [Sequencer] 已關閉連接到 orderer %d\n", i)
+		if useGRPC {
+			for i, conn := range grpcOrdererConns {
+				if conn != nil && conn.conn != nil {
+					conn.conn.Close()
+					fmt.Printf("🔒 [Sequencer] 已關閉 gRPC 連接到 orderer %d\n", i)
+				}
+			}
+		} else {
+			for i, conn := range ordererConns {
+				if conn != nil {
+					conn.Close()
+					fmt.Printf("🔒 [Sequencer] 已關閉 UDP 連接到 orderer %d\n", i)
+				}
 			}
 		}
+	}()
+
+	// 🔥 同時啟動 gRPC 服務端（在 goroutine 中）
+	// 注意：需要先從 sequencer.proto 生成 Go 代碼才能使用
+	// 運行: protoc --go_out=. --go-grpc_out=. sequencer/sequencer.proto
+	go func() {
+		// 檢查是否有生成的 gRPC 代碼
+		// 如果沒有生成，這個函數會失敗，但不影響 UDP 服務
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("⚠️  [Sequencer] gRPC 服務端未啟動（需要生成 gRPC 代碼）: %v\n", r)
+			}
+		}()
+		startGRPCServer(&count, ordererConns, broadcastCount, grpcOrdererConns)
 	}()
 
 	for {
@@ -88,8 +130,9 @@ func main() {
 		fmt.Printf("📥 [Sequencer] 收到封包: %d bytes (Seq #%d)\n", n, count)
 
 		// Extract the extra bytes from the tail
-		if n < 2 {
-			fmt.Println("⚠️  [Sequencer] 數據太小，跳過")
+		// 🔥 修復：需要至少 4 bytes 才能安全地使用 buffer[:n-4]
+		if n < 4 {
+			fmt.Printf("⚠️  [Sequencer] 數據太小 (%d bytes)，跳過（需要至少 4 bytes）\n", n)
 			continue
 		}
 
@@ -104,18 +147,84 @@ func main() {
 		// 🔥 使用預先創建的連接轉發
 		successCount := 0
 		failCount := 0
-		for i := 8 - broadcastCount; i < 8; i++ {
-			if ordererConns[i] == nil {
-				failCount++
-				continue
-			}
 
-			err = forward(dataWithseqBytes, ordererConns[i])
-			if err != nil {
-				fmt.Printf("❌ [Sequencer] 轉發失敗 (orderer %d, seq=%d): %v\n", i, count, err)
-				failCount++
-			} else {
-				successCount++
+		// 檢查是否使用 gRPC 發送到 orderer
+		useGRPC := true
+
+		if useGRPC {
+			// 使用 gRPC 轉發（使用預先創建的連接，如果不存在則動態創建）
+			ports := [9]string{"3073", "4073", "5073", "6073", "7073", "9073", "10073", "8073"}
+			addrs := [9]string{"localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost"}
+
+			for i := 8 - broadcastCount; i < 8; i++ {
+				// 如果連接不存在，嘗試創建
+				if grpcOrdererConns[i] == nil {
+					udpPort, _ := strconv.Atoi(ports[i])
+					grpcPort := strconv.Itoa(udpPort + 1)
+					grpcAddress := fmt.Sprintf("%s:%s", addrs[i], grpcPort)
+
+					// 🔥 修復：使用 defer 確保 context 正確取消
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					conn, err := grpc.DialContext(ctx, grpcAddress,
+						grpc.WithTransportCredentials(insecure.NewCredentials()),
+						grpc.WithBlock(),
+					)
+					cancel() // 連接建立後可以安全地取消 context
+
+					if err != nil {
+						fmt.Printf("❌ [Sequencer] gRPC 連接失敗 (orderer %d, %s): %v\n", i, grpcAddress, err)
+						failCount++
+						continue
+					}
+
+					client := NewSequencerServiceClient(conn)
+					grpcOrdererConns[i] = &grpcOrdererConn{
+						address: grpcAddress,
+						conn:    conn,
+						client:  client,
+					}
+					fmt.Printf("✅ [Sequencer] 動態連接到 orderer (gRPC) %s\n", grpcAddress)
+				}
+
+				// 使用連接發送
+				req := &SubmitBatchRequest{
+					BatchData: dataWithseqBytes,
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				resp, err := grpcOrdererConns[i].client.SubmitBatch(ctx, req)
+				cancel()
+
+				if err != nil {
+					fmt.Printf("❌ [Sequencer] gRPC 轉發失敗 (orderer %d, seq=%d): %v\n", i, count, err)
+					// 連接可能已斷開，清除連接以便下次重試
+					if grpcOrdererConns[i] != nil && grpcOrdererConns[i].conn != nil {
+						grpcOrdererConns[i].conn.Close()
+					}
+					grpcOrdererConns[i] = nil
+					failCount++
+				} else if !resp.Success {
+					fmt.Printf("❌ [Sequencer] orderer %d 拒絕批次 (seq=%d): %s\n", i, count, resp.ErrorMessage)
+					failCount++
+				} else {
+					successCount++
+				}
+			}
+		} else {
+			// 使用 UDP 轉發（原有邏輯）
+			for i := 8 - broadcastCount; i < 8; i++ {
+				if ordererConns[i] == nil {
+					failCount++
+					continue
+				}
+
+				err = forward(dataWithseqBytes, ordererConns[i])
+				if err != nil {
+					fmt.Printf("❌ [Sequencer] 轉發失敗 (orderer %d, seq=%d): %v\n", i, count, err)
+					failCount++
+				} else {
+					successCount++
+				}
 			}
 		}
 

@@ -20,8 +20,12 @@ import (
 	gp "github.com/hyperledger/fabric-protos-go-apiv2/gateway"
 	ab "github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
+	"github.com/hyperledger/fabric/internal/pkg/gateway/config"
+	"github.com/hyperledger/fabric/internal/pkg/gateway/sequencerpb"
 	"github.com/hyperledger/fabric/protoutil"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -62,6 +66,7 @@ func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
 
 	// 如果是第一筆交易，啟動計時器
 	if len(sbc.buffer) == 1 {
+		fmt.Printf("⏳ [Batch] 第一筆交易加入，啟動 %v 超時計時器 (total=%d)\n", sbc.timeout, sbc.totalTxnCount)
 		sbc.timer = time.AfterFunc(sbc.timeout, func() {
 			sbc.mu.Lock()
 			defer sbc.mu.Unlock()
@@ -70,6 +75,8 @@ func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
 				sbc.flushLocked()
 			}
 		})
+	} else {
+		fmt.Printf("📝 [Batch] 交易加入 batch: buffer size=%d/%d, total=%d\n", len(sbc.buffer), sbc.batchSize, sbc.totalTxnCount)
 	}
 
 	// 檢查是否達到批次大小
@@ -274,14 +281,20 @@ func (gs *Server) submitNonBFT(ctx context.Context, orderers []*orderer, txn *co
 		batchSize := 100                      // 批次大小：100 筆交易
 		batchTimeout := 10 * time.Millisecond // 超時：10ms
 
-		fmt.Printf("🚀 [Batch] 初始化批次收集器: size=%d, timeout=%v\n", batchSize, batchTimeout)
+		fmt.Printf("🚀 [Batch] 初始化批次收集器: size=%d, timeout=%v, transport=%s\n",
+			batchSize, batchTimeout, gs.options.SequencerTransport)
+
+		var sendFunc func([]*common.Envelope) error
+		if gs.options.SequencerTransport == config.TransportGRPC {
+			sendFunc = gs.broadcastBatchByGRPC
+		} else {
+			sendFunc = gs.broadcastBatchByUDP
+		}
 
 		gs.batchCollector = NewSimpleBatchCollector(
 			batchSize,
 			batchTimeout,
-			func(batch []*common.Envelope) error {
-				return gs.broadcastBatchByUDP(batch)
-			},
+			sendFunc,
 		)
 	}
 	// fmt.Printf("[lz debug] txn: %x\n", txn)
@@ -313,15 +326,11 @@ func (gs *Server) broadcast(ctx context.Context, orderer *orderer, txn *common.E
 	return response, nil
 }
 
-// broadcastBatchByUDP 批次發送交易到 sequencer
-// 將多個交易打包成一個 batch，一次性發送
-func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
+// buildBatchPacket 構建批次封包（UDP 和 gRPC 共用）
+func (gs *Server) buildBatchPacket(batch []*common.Envelope) ([]byte, error) {
 	if len(batch) == 0 {
-		return fmt.Errorf("empty batch")
+		return nil, fmt.Errorf("empty batch")
 	}
-
-	fmt.Printf("📤 [BatchUDP] Broadcasting batch of %d transactions\n", len(batch))
-	startTime := time.Now()
 
 	// 1. 序列化所有交易
 	txnDataList := make([][]byte, len(batch))
@@ -330,7 +339,7 @@ func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
 	for i, txn := range batch {
 		data, err := proto.Marshal(txn)
 		if err != nil {
-			return fmt.Errorf("failed to marshal transaction %d: %w", i, err)
+			return nil, fmt.Errorf("failed to marshal transaction %d: %w", i, err)
 		}
 		txnDataList[i] = data
 		totalDataSize += len(data)
@@ -373,12 +382,30 @@ func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
 	// 7. 後置 sequencer 預留位 (4 bytes) - sequencer 會填入 sequencer number
 	batchPacket = append(batchPacket, 0x00, 0x00, 0x00, 0x00)
 
+	return batchPacket, nil
+}
+
+// broadcastBatchByUDP 批次發送交易到 sequencer (UDP)
+func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("empty batch")
+	}
+
+	fmt.Printf("📤 [BatchUDP] Broadcasting batch of %d transactions\n", len(batch))
+	startTime := time.Now()
+
+	// 構建批次封包
+	batchPacket, err := gs.buildBatchPacket(batch)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("📊 [BatchUDP] Packet: %d bytes, %d txns, avg %d bytes/txn\n",
 		len(batchPacket), len(batch), len(batchPacket)/len(batch))
 
 	// ⚠️ UDP 大封包警告
-	if len(batchPacket) > 8192 {
-		fmt.Printf("⚠️  [BatchUDP] 警告: 封包大小 %d bytes 超過 8KB，可能會分片或丟失！\n", len(batchPacket))
+	if len(batchPacket) > 1472 {
+		fmt.Printf("⚠️  [BatchUDP] 警告: 封包大小 %d bytes 超過 UDP MTU (1472 bytes)，可能會分片或丟失！\n", len(batchPacket))
 	}
 
 	// 8. 發送批次包
@@ -403,6 +430,93 @@ func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
 	throughput := float64(len(batch)) / elapsed.Seconds()
 	fmt.Printf("✅ [BatchUDP] Sent %d txns in %v (%.0f txn/s)\n",
 		len(batch), elapsed, throughput)
+
+	return nil
+}
+
+// broadcastBatchByGRPC 批次發送交易到 sequencer (gRPC)
+func (gs *Server) broadcastBatchByGRPC(batch []*common.Envelope) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("empty batch")
+	}
+
+	fmt.Printf("📤 [BatchGRPC] Broadcasting batch of %d transactions\n", len(batch))
+	startTime := time.Now()
+
+	// 構建批次封包
+	batchPacket, err := gs.buildBatchPacket(batch)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("📊 [BatchGRPC] Packet: %d bytes, %d txns, avg %d bytes/txn\n",
+		len(batchPacket), len(batch), len(batchPacket)/len(batch))
+
+	// 檢查 gRPC 連接，如果未連接或連接未就緒則嘗試連接
+	if gs.GrpcGateway == nil {
+		fmt.Printf("⚠️  [BatchGRPC] gRPC 連接未建立，使用阻塞模式連接...\n")
+		if err := gs.reconnectGRPC(); err != nil {
+			return fmt.Errorf("failed to establish gRPC connection: %w", err)
+		}
+	} else {
+		// 檢查連接狀態（非阻塞模式可能返回連接對象但連接還沒建立）
+		if conn, ok := gs.GrpcGateway.(*grpc.ClientConn); ok {
+			state := conn.GetState()
+			fmt.Printf("🔍 [BatchGRPC] 當前 gRPC 連接狀態: %v\n", state)
+			if state != connectivity.Ready {
+				fmt.Printf("⚠️  [BatchGRPC] gRPC 連接狀態: %v，嘗試重新連接...\n", state)
+				if err := gs.reconnectGRPC(); err != nil {
+					return fmt.Errorf("failed to reconnect gRPC (state: %v): %w", state, err)
+				}
+			} else {
+				fmt.Printf("✅ [BatchGRPC] gRPC 連接已就緒 (state: Ready)\n")
+			}
+		} else {
+			fmt.Printf("⚠️  [BatchGRPC] gRPC 連接類型錯誤，強制重新連接...\n")
+			gs.GrpcGateway = nil
+			if err := gs.reconnectGRPC(); err != nil {
+				return fmt.Errorf("failed to reconnect gRPC: %w", err)
+			}
+		}
+	}
+
+	// 創建 gRPC 客戶端
+	client := sequencerpb.NewSequencerServiceClient(gs.GrpcGateway)
+
+	// 創建帶超時的 context
+	ctx, cancel := context.WithTimeout(context.Background(), gs.options.BroadcastTimeout)
+	defer cancel()
+
+	// 發送批次請求
+	req := &sequencerpb.SubmitBatchRequest{
+		BatchData: batchPacket,
+	}
+
+	fmt.Printf("🚀 [BatchGRPC] 發送到 sequencer: %s, packet size=%d bytes\n", gs.options.SequencerAddress, len(batchPacket))
+	resp, err := client.SubmitBatch(ctx, req)
+	if err != nil {
+		// 嘗試重連
+		if err := gs.reconnectGRPC(); err != nil {
+			return fmt.Errorf("failed to reconnect: %w", err)
+		}
+
+		// 重試發送
+		client = sequencerpb.NewSequencerServiceClient(gs.GrpcGateway)
+		resp, err = client.SubmitBatch(ctx, req)
+		if err != nil {
+			return fmt.Errorf("failed to submit batch via gRPC after reconnect: %w", err)
+		}
+	}
+
+	// 檢查響應
+	if !resp.Success {
+		return fmt.Errorf("sequencer rejected batch: %s", resp.ErrorMessage)
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(len(batch)) / elapsed.Seconds()
+	fmt.Printf("✅ [BatchGRPC] Sent %d txns in %v (%.0f txn/s), seq=%d\n",
+		len(batch), elapsed, throughput, resp.SequenceNumber)
 
 	return nil
 }

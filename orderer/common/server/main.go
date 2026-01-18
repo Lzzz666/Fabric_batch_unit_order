@@ -193,10 +193,32 @@ func Main() {
 
 	mutualTLS := serverConfig.SecOpts.UseTLS && serverConfig.SecOpts.RequireClientCert
 
+	// 檢查是否使用 gRPC（通過環境變量）
+	useGRPC := true
+
 	udpPort := conf.General.ListenPort + 23
-	serverUDP := NewUDPServer("localhost", udpPort, manager)
-	go serverUDP.Start()
-	defer serverUDP.Close()
+	grpcPort := conf.General.ListenPort + 24 // gRPC 端口 = UDP 端口 + 1
+
+	if useGRPC {
+		// 啟動 gRPC server
+		logger.Infof("準備啟動 gRPC server: ListenPort=%d, UDP Port=%d, gRPC Port=%d",
+			conf.General.ListenPort, udpPort, grpcPort)
+		// 使用 0.0.0.0 以便從容器外部訪問
+		serverGRPC := NewGRPCServer("0.0.0.0", grpcPort, manager)
+		go func() {
+			if err := serverGRPC.Start(); err != nil {
+				logger.Errorf("gRPC server 啟動失敗: %v", err)
+			}
+		}()
+		defer serverGRPC.Close()
+		logger.Infof("✅ gRPC server 已在 goroutine 中啟動，監聽端口 %d", grpcPort)
+	} else {
+		// 啟動 UDP server（默認）
+		serverUDP := NewUDPServer("localhost", udpPort, manager)
+		go serverUDP.Start()
+		defer serverUDP.Close()
+		logger.Infof("UDP server started on port %d", udpPort)
+	}
 
 	server := NewServer(
 		manager,

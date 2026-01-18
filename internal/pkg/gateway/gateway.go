@@ -35,7 +35,8 @@ type Server struct {
 	ledgerProvider   ledger.Provider
 	getChannelConfig channelConfigGetter
 	UdpGateway       *net.UDPConn
-	batchCollector   *SimpleBatchCollector // 批次收集器
+	GrpcGateway      grpc.ClientConnInterface // gRPC 客戶端連接
+	batchCollector   *SimpleBatchCollector    // 批次收集器
 }
 
 type EndorserServerAdapter struct {
@@ -135,7 +136,12 @@ func newServer(localEndorser peerproto.EndorserClient,
 		getChannelConfig: getChannelConfig,
 	}
 
-	s.connect()
+	// 嘗試連接到 sequencer，但不阻塞啟動（連接失敗時會在首次使用時重試）
+	if err := s.connect(); err != nil {
+		// 只記錄警告，不影響 peer 啟動
+		// sequencer 連接將在首次使用時自動重試
+		s.logger.Warnw("Failed to connect to sequencer during startup", "error", err)
+	}
 
 	return s
 }
