@@ -63,11 +63,13 @@ type grpcOrdererConn struct {
 
 func createGRPCConnections(broadcastCount int) []*grpcOrdererConn {
 
-	ports := [9]string{"3073", "4073", "5073", "6073", "7073", "9073", "10073", "8073"}
-	addrs := [9]string{"localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost"}
+	// GCP orderer addresses (使用內部 IP)
+	// orderer-0: 10.140.0.9, orderer-1: 10.140.0.2, orderer-2: 10.140.0.3, orderer-3: 10.140.0.4
+	ports := []string{"7073", "8073", "9073", "10073"}
+	addrs := []string{"10.140.0.9", "10.140.0.2", "10.140.0.3", "10.140.0.4"}
 
-	conns := make([]*grpcOrdererConn, 8)
-	for i := 8 - broadcastCount; i < 8; i++ {
+	conns := make([]*grpcOrdererConn, 4)
+	for i := 4 - broadcastCount; i < 4; i++ {
 		// gRPC 端口 = UDP 端口 + 1
 		udpPort, _ := strconv.Atoi(ports[i])
 		grpcPort := strconv.Itoa(udpPort + 1)
