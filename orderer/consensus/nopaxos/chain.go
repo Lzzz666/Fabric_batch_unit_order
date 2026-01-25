@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"math"
-	"net"
 	"os"
 	"sync"
 	"time"
@@ -102,10 +101,27 @@ func newChain(support consensus.ConsenterSupport, consenters []*etcdraft.Consent
 
 	nopaxosServerConfig := &nopaxosConfig.ProtocolConfig{}
 
-	host, _, err := net.SplitHostPort(config.Operations.ListenAddress)
-	if err != nil {
-		fmt.Println("Error:", err)
+	// 從環境變數讀取節點 ID，這必須與 consenters 中的 Host 匹配
+	nodeID := os.Getenv("NOPAXOS_NODE_ID")
+	if nodeID == "" {
+		// 如果沒有設置環境變數，嘗試從 config.General.ListenPort 推斷
+		// 這是一個 fallback，建議明確設置 NOPAXOS_NODE_ID
+		logger.Warning("NOPAXOS_NODE_ID 環境變數未設置，嘗試從 ListenPort 推斷節點身份")
+		listenPort := config.General.ListenPort
+		for _, consenter := range consenters {
+			if int(consenter.GetPort()) == int(listenPort) {
+				nodeID = consenter.GetHost()
+				logger.Infof("根據 ListenPort %d 推斷節點 ID: %s", listenPort, nodeID)
+				break
+			}
+		}
 	}
+
+	if nodeID == "" {
+		panic("無法確定節點身份！請設置 NOPAXOS_NODE_ID 環境變數，例如: NOPAXOS_NODE_ID=orderer1.example.com")
+	}
+
+	logger.Infof("NOPaxos 節點 ID: %s", nodeID)
 
 	members := make(map[string]protocol.Member)
 	for _, consenter := range consenters {
@@ -120,7 +136,7 @@ func newChain(support consensus.ConsenterSupport, consenters []*etcdraft.Consent
 	}
 
 	cluster := protocol.NodeCluster{
-		MemberID: host,
+		MemberID: nodeID,
 		Members:  members,
 	}
 
