@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package blkstorage
 
 import (
+	"fmt"
+
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
@@ -85,11 +87,22 @@ func addDataBytesAndConstructTxIndexInfo(blockData *common.BlockData, buf []byte
 	buf = protowire.AppendVarint(buf, uint64(len(blockData.Data)))
 	for _, txEnvelopeBytes := range blockData.Data {
 		offset := len(buf)
-		txid, err := protoutil.GetOrComputeTxIDFromEnvelope(txEnvelopeBytes)
-		if err != nil {
-			logger.Warningf("error while extracting txid from tx envelope bytes during serialization of block. Ignoring this error as this is caused by a malformed transaction. Error:%s",
-				err)
+		var txid string
+
+		// 🔥 檢查是否為 hash-only data (32 bytes = SHA256 hash)
+		// 對於 hash-only block，data 是 32-byte hash 而非 serialized envelope
+		if len(txEnvelopeBytes) == 32 {
+			// 這是一個 hash，使用 hex 編碼作為 txid
+			txid = fmt.Sprintf("hash:%x", txEnvelopeBytes)
+		} else {
+			var err error
+			txid, err = protoutil.GetOrComputeTxIDFromEnvelope(txEnvelopeBytes)
+			if err != nil {
+				logger.Warningf("error while extracting txid from tx envelope bytes during serialization of block. Ignoring this error as this is caused by a malformed transaction. Error:%s",
+					err)
+			}
 		}
+
 		buf = protowire.AppendBytes(buf, txEnvelopeBytes)
 		idxInfo := &txindexInfo{txID: txid, loc: &locPointer{offset, len(buf) - offset}}
 		txOffsets = append(txOffsets, idxInfo)
@@ -146,10 +159,18 @@ func extractData(buf *buffer) (*common.BlockData, []*txindexInfo, error) {
 		if txEnvBytes, err = buf.DecodeRawBytes(false); err != nil {
 			return nil, nil, errors.Wrap(err, "error decoding the transaction envelope")
 		}
-		if txid, err = protoutil.GetOrComputeTxIDFromEnvelope(txEnvBytes); err != nil {
-			logger.Warningf("error while extracting txid from tx envelope bytes during deserialization of block. Ignoring this error as this is caused by a malformed transaction. Error:%s",
-				err)
+
+		// 🔥 檢查是否為 hash-only data (32 bytes = SHA256 hash)
+		if len(txEnvBytes) == 32 {
+			// 這是一個 hash，使用 hex 編碼作為 txid
+			txid = fmt.Sprintf("hash:%x", txEnvBytes)
+		} else {
+			if txid, err = protoutil.GetOrComputeTxIDFromEnvelope(txEnvBytes); err != nil {
+				logger.Warningf("error while extracting txid from tx envelope bytes during deserialization of block. Ignoring this error as this is caused by a malformed transaction. Error:%s",
+					err)
+			}
 		}
+
 		data.Data = append(data.Data, txEnvBytes)
 		idxInfo := &txindexInfo{txID: txid, loc: &locPointer{txOffset, buf.GetBytesConsumed() - txOffset}}
 		txOffsets = append(txOffsets, idxInfo)

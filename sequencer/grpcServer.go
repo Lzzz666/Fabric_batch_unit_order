@@ -30,9 +30,9 @@ func (s *SequencerGRPCServer) SubmitBatch(ctx context.Context, req *SubmitBatchR
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 增加序號
-	*s.count++
+	// 先取當前序號再遞增（與 UDP 路徑一致，第一個批次為 Seq #1）
 	seqNum := *s.count
+	*s.count++
 
 	batchData := req.BatchData
 	if len(batchData) < 8 {
@@ -62,7 +62,8 @@ func (s *SequencerGRPCServer) SubmitBatch(ctx context.Context, req *SubmitBatchR
 		// GCP orderer addresses (使用內部 IP)
 		// orderer-0: 10.140.0.9, orderer-1: 10.140.0.2, orderer-2: 10.140.0.3, orderer-3: 10.140.0.4
 		ports := []string{"7073", "8073", "9073", "10073"}
-		addrs := []string{"10.140.0.9", "10.140.0.2", "10.140.0.3", "10.140.0.4"}
+		// addrs := []string{"10.140.0.9", "10.140.0.2", "10.140.0.3", "10.140.0.4"}
+		addrs := []string{"localhost", "localhost", "localhost", "localhost"}
 
 		for i := 4 - s.broadcastCount; i < 4; i++ {
 			// 如果連接不存在，嘗試創建

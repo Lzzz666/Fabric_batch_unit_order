@@ -102,12 +102,25 @@ func (mcs *ConsenterSupport) CreateNextBlock(data []*cb.Envelope) *cb.Block {
 	return block
 }
 
+// CreateNextHashBlock creates a hash-only block containing transaction hashes
+func (mcs *ConsenterSupport) CreateNextHashBlock(hashes [][]byte) *cb.Block {
+	block := protoutil.NewBlock(0, nil)
+	block.Data = &cb.BlockData{Data: hashes}
+	mcs.NextBlockVal = block
+	return block
+}
+
 // WriteBlock writes data to the Blocks channel
 func (mcs *ConsenterSupport) WriteBlock(block *cb.Block, encodedMetadataValue []byte) {
 	if encodedMetadataValue != nil {
 		block.Metadata.Metadata[cb.BlockMetadataIndex_ORDERER] = protoutil.MarshalOrPanic(&cb.Metadata{Value: encodedMetadataValue})
 	}
 	mcs.Append(block)
+}
+
+// WriteBlockSync writes data to the Blocks channel synchronously
+func (mcs *ConsenterSupport) WriteBlockSync(block *cb.Block, encodedMetadataValue []byte) {
+	mcs.WriteBlock(block, encodedMetadataValue)
 }
 
 // WriteConfigBlock calls WriteBlock

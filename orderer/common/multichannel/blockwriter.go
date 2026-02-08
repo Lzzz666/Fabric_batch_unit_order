@@ -88,6 +88,54 @@ func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
 	return block
 }
 
+// HashOnlyBlockFlag is the flag value used to identify hash-only blocks in metadata
+const HashOnlyBlockFlag = byte(0x01)
+
+// HashOnlyBlockMetadataIndex is the metadata index for hash-only block marker (index 4)
+const HashOnlyBlockMetadataIndex = 4
+
+// CreateNextHashBlock creates a hash-only block containing transaction hashes instead of full envelopes.
+// The block's Data contains 32-byte SHA256 hashes instead of serialized envelopes.
+// A marker is set in metadata to identify this as a hash-only block.
+func (bw *BlockWriter) CreateNextHashBlock(hashes [][]byte) *cb.Block {
+	fmt.Println("[lzzz debug] CreateNextHashBlock: creating hash-only block")
+	fmt.Println("[lzzz debug] bw.lastBlock.Header: ", bw.lastBlock.Header)
+	previousBlockHash := protoutil.BlockHeaderHash(bw.lastBlock.Header)
+	fmt.Println("[lzzz debug] previousBlockHash: ", previousBlockHash)
+
+	// Create block data containing hashes directly
+	data := &cb.BlockData{
+		Data: make([][]byte, len(hashes)),
+	}
+
+	for i, hash := range hashes {
+		if len(hash) != 32 {
+			logger.Panicf("Invalid hash length at index %d: expected 32, got %d", i, len(hash))
+		}
+		// Store the hash directly (not wrapped in envelope)
+		data.Data[i] = hash
+	}
+
+	block := protoutil.NewBlock(bw.lastBlock.Header.Number+1, previousBlockHash)
+	block.Header.DataHash = protoutil.ComputeBlockDataHash(data)
+	block.Data = data
+
+	// Mark the block as hash-only by setting a flag in metadata
+	// Ensure metadata slice is large enough
+	fmt.Printf("🔶 [CreateNextHashBlock] 設置 hash-only 標記前: metadata_len=%d\n", len(block.Metadata.Metadata))
+	for len(block.Metadata.Metadata) <= HashOnlyBlockMetadataIndex {
+		block.Metadata.Metadata = append(block.Metadata.Metadata, nil)
+	}
+	block.Metadata.Metadata[HashOnlyBlockMetadataIndex] = []byte{HashOnlyBlockFlag}
+	fmt.Printf("🔶 [CreateNextHashBlock] 設置 hash-only 標記後: metadata_len=%d, metadata[%d]=%v\n",
+		len(block.Metadata.Metadata), HashOnlyBlockMetadataIndex, block.Metadata.Metadata[HashOnlyBlockMetadataIndex])
+
+	fmt.Printf("[lzzz debug] CreateNextHashBlock: created block #%d with %d hashes, marked as hash-only\n",
+		block.Header.Number, len(hashes))
+
+	return block
+}
+
 // WriteConfigBlock should be invoked for blocks which contain a config transaction.
 // This call will block until the new config has taken effect, then will return
 // while the block is written asynchronously to disk.
@@ -199,17 +247,43 @@ func (bw *BlockWriter) WriteBlockSync(block *cb.Block, encodedMetadataValue []by
 // this ensures that the encoded config sequence numbers stay in sync
 func (bw *BlockWriter) commitBlock(encodedMetadataValue []byte) {
 	fmt.Println("[lzzz debug] commitBlock")
+
+	// 🔥 Debug: 檢查 hash-only 標記
+	if len(bw.lastBlock.Metadata.Metadata) > HashOnlyBlockMetadataIndex {
+		marker := bw.lastBlock.Metadata.Metadata[HashOnlyBlockMetadataIndex]
+		fmt.Printf("🔍 [commitBlock] 開始: block #%d, metadata[%d]=%v (len=%d)\n",
+			bw.lastBlock.Header.Number, HashOnlyBlockMetadataIndex, marker, len(marker))
+	} else {
+		fmt.Printf("🔍 [commitBlock] 開始: block #%d, metadata_len=%d (不足以存放標記)\n",
+			bw.lastBlock.Header.Number, len(bw.lastBlock.Metadata.Metadata))
+	}
+
 	bw.addLastConfig(bw.lastBlock)
+
+	// 🔥 Debug: 檢查 addLastConfig 後的標記
+	if len(bw.lastBlock.Metadata.Metadata) > HashOnlyBlockMetadataIndex {
+		marker := bw.lastBlock.Metadata.Metadata[HashOnlyBlockMetadataIndex]
+		fmt.Printf("🔍 [commitBlock] addLastConfig 後: metadata[%d]=%v\n", HashOnlyBlockMetadataIndex, marker)
+	}
 
 	if len(bw.lastBlock.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES]) == 0 {
 		bw.addBlockSignature(bw.lastBlock, encodedMetadataValue)
 	}
 
+	// 🔥 Debug: 檢查 addBlockSignature 後的標記
+	if len(bw.lastBlock.Metadata.Metadata) > HashOnlyBlockMetadataIndex {
+		marker := bw.lastBlock.Metadata.Metadata[HashOnlyBlockMetadataIndex]
+		fmt.Printf("🔍 [commitBlock] addBlockSignature 後: metadata[%d]=%v\n", HashOnlyBlockMetadataIndex, marker)
+	}
+
+	fmt.Printf("💾 [commitBlock] 準備 Append block #%d to ledger...\n", bw.lastBlock.Header.Number)
 	err := bw.support.Append(bw.lastBlock)
-	fmt.Println("[lzzz debug] Append block")
 	if err != nil {
+		fmt.Printf("❌ [commitBlock] Append block #%d FAILED: %v\n", bw.lastBlock.Header.Number, err)
 		logger.Panicf("[channel: %s] Could not append block: %s", bw.support.ChannelID(), err)
 	}
+	fmt.Printf("✅ [commitBlock] Append block #%d SUCCESS! New height should be %d\n",
+		bw.lastBlock.Header.Number, bw.lastBlock.Header.Number+1)
 	logger.Debugf("[channel: %s] Wrote block [%d]", bw.support.ChannelID(), bw.lastBlock.GetHeader().Number)
 }
 

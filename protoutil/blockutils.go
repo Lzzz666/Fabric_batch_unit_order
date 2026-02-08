@@ -66,6 +66,38 @@ func BlockHeaderHash(b *cb.BlockHeader) []byte {
 	return sum[:]
 }
 
+// HashOnlyBlockMetadataIndex is the metadata index for hash-only block marker (index 4, after SIGNATURES, LAST_CONFIG, TRANSACTIONS_FILTER, ORDERER)
+const HashOnlyBlockMetadataIndex = 4
+
+// HashOnlyBlockFlag is the flag value used to identify hash-only blocks in metadata
+const HashOnlyBlockFlag = byte(0x01)
+
+// IsHashOnlyBlock returns true if the block is marked as hash-only (Data contains 32-byte hashes instead of envelopes).
+func IsHashOnlyBlock(block *cb.Block) bool {
+	if block == nil || block.Metadata == nil {
+		return false
+	}
+	metadataLen := len(block.Metadata.Metadata)
+	if metadataLen <= HashOnlyBlockMetadataIndex {
+		return false
+	}
+	marker := block.Metadata.Metadata[HashOnlyBlockMetadataIndex]
+	return len(marker) > 0 && marker[0] == HashOnlyBlockFlag
+}
+
+// BlockDataHashForVerification returns the hash of block.Data for verification against block.Header.DataHash.
+// For hash-only blocks (metadata index 4 set), it uses ComputeBlockDataHash only; otherwise it uses BlockDataHash
+// which also verifies that each Data entry is a well-formed envelope.
+func BlockDataHashForVerification(block *cb.Block) ([]byte, error) {
+	if block == nil || block.Data == nil {
+		return nil, fmt.Errorf("block or block data is nil")
+	}
+	if IsHashOnlyBlock(block) {
+		return ComputeBlockDataHash(block.Data), nil
+	}
+	return BlockDataHash(block.Data)
+}
+
 func BlockDataHash(b *cb.BlockData) ([]byte, error) {
 	if err := VerifyTransactionsAreWellFormed(b); err != nil {
 		return nil, err

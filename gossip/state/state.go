@@ -161,6 +161,9 @@ type GossipStateProviderImpl struct {
 	blockingMode bool
 
 	config *StateConfig
+
+	// TxnPool for hash-only block resolution
+	txnPool *TxnPoolImpl
 }
 
 // stateRequestValidator facilitates validation of the state request messages
@@ -254,6 +257,8 @@ func NewGossipStateProvider(
 		requestValidator:    &stateRequestValidator{},
 		blockingMode:        blockingMode,
 		config:              config,
+		// Use global TxnPool for hash-only block resolution (shared with Gateway)
+		txnPool:             GetGlobalTxnPool(chainID, logger),
 	}
 
 	logger.Infof("Updating metadata information for channel %s, "+
@@ -276,6 +281,10 @@ func NewGossipStateProvider(
 	return s
 }
 
+// TxnBroadcastMagic 是用於標記交易廣播消息的魔數
+// 0x54584E45 = "TXNE" (Transaction Envelope)
+const TxnBroadcastMagic uint32 = 0x54584E45
+
 func (s *GossipStateProviderImpl) receiveAndQueueGossipMessages(ch <-chan *proto.GossipMessage) {
 	for msg := range ch {
 		s.logger.Debug("Received new message via gossip channel")
@@ -288,8 +297,28 @@ func (s *GossipStateProviderImpl) receiveAndQueueGossipMessages(ch <-chan *proto
 
 			dataMsg := msg.GetDataMsg()
 			if dataMsg != nil {
-				if err := s.addPayload(dataMsg.GetPayload(), nonBlocking); err != nil {
-					s.logger.Warningf("Block [%d] received from gossip wasn't added to payload buffer: %v", dataMsg.Payload.SeqNum, err)
+				payload := dataMsg.GetPayload()
+				if payload == nil {
+					s.logger.Debug("Received DataMsg with nil payload, ignoring")
+					return
+				}
+
+				// 🔥 檢查是否是交易廣播消息（通過檢查魔數前綴）
+				// 格式: [4B magic=0x54584E45][32B hash][envelope bytes]
+				if len(payload.Data) >= 36 { // 4 (magic) + 32 (hash) = 36 minimum
+					magic := uint32(payload.Data[0])<<24 | uint32(payload.Data[1])<<16 |
+						uint32(payload.Data[2])<<8 | uint32(payload.Data[3])
+
+					if magic == TxnBroadcastMagic {
+						// 這是交易廣播消息，存入 TxnPool
+						s.handleTxnBroadcast(payload.Data)
+						return
+					}
+				}
+
+				// 這是普通的區塊數據消息，走原來的流程
+				if err := s.addPayload(payload, nonBlocking); err != nil {
+					s.logger.Warningf("Block [%d] received from gossip wasn't added to payload buffer: %v", payload.SeqNum, err)
 					return
 				}
 			} else {
@@ -297,6 +326,27 @@ func (s *GossipStateProviderImpl) receiveAndQueueGossipMessages(ch <-chan *proto
 			}
 		}(msg)
 	}
+}
+
+// handleTxnBroadcast 處理從其他 peer 收到的交易廣播消息
+// 格式: [4B magic][32B hash][envelope bytes]
+func (s *GossipStateProviderImpl) handleTxnBroadcast(data []byte) {
+	if len(data) < 37 { // 4 (magic) + 32 (hash) + 1 (min envelope)
+		return
+	}
+
+	// 提取 hash 和 envelope
+	hash := data[4:36]
+	envBytes := data[36:]
+
+	// 反序列化 envelope
+	env := &common.Envelope{}
+	if err := pb.Unmarshal(envBytes, env); err != nil {
+		return
+	}
+
+	// 存入 TxnPool（內部會去重）
+	s.txnPool.Put(hash, env, DefaultTxnPoolTTL)
 }
 
 func (s *GossipStateProviderImpl) receiveAndDispatchDirectMessages(ch <-chan protoext.ReceivedMessage) {
@@ -535,6 +585,10 @@ func (s *GossipStateProviderImpl) Stop() {
 		s.ledger.Close()
 		close(s.stateRequestCh)
 		close(s.stateResponseCh)
+		// Stop TxnPool cleanup goroutine
+		if s.txnPool != nil {
+			s.txnPool.Stop()
+		}
 	})
 }
 
@@ -557,6 +611,19 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 						payload.SeqNum, rawBlock.Header, rawBlock.Data)
 					continue
 				}
+
+				// 🔥 檢查是否為 hash-only block
+				// 實驗模式：跳過解析，直接提交（只測排序層 throughput）
+				isHashOnly := IsHashOnlyBlock(rawBlock)
+				if isHashOnly {
+					fmt.Printf("📦 [Peer State] Hash-only block #%d with %d hashes (skipping resolution for throughput test)\n",
+						payload.SeqNum, len(rawBlock.Data.Data))
+					// 清除 hash-only 標記，讓後續流程不會再檢查
+					if len(rawBlock.Metadata.Metadata) > HashOnlyBlockMetadataIndex {
+						rawBlock.Metadata.Metadata[HashOnlyBlockMetadataIndex] = nil
+					}
+				}
+
 				s.logger.Debugf("[%s] Transferring block [%d] with %d transaction(s) to the ledger", s.chainID, payload.SeqNum, len(rawBlock.Data.Data))
 
 				// Read all private data into slice
@@ -815,4 +882,107 @@ func (s *GossipStateProviderImpl) commitBlock(block *common.Block, pvtData util.
 	s.stateMetrics.Height.With("channel", s.chainID).Set(float64(block.Header.Number + 1))
 
 	return nil
+}
+
+// resolveHashBlock 將 hash-only block 解析為完整的區塊
+// 從 TxnPool 中根據 hash 查找對應的完整交易
+func (s *GossipStateProviderImpl) resolveHashBlock(block *common.Block) (*common.Block, error) {
+	if block == nil || block.Data == nil {
+		return block, nil
+	}
+
+	fmt.Printf("🔍 [resolveHashBlock] 開始解析 block #%d, hash 數量=%d\n",
+		block.Header.Number, len(block.Data.Data))
+	s.logger.Infof("[resolveHashBlock] Starting to resolve hash-only block #%d with %d hashes",
+		block.Header.Number, len(block.Data.Data))
+
+	resolvedData := make([][]byte, 0, len(block.Data.Data))
+	missingCount := 0
+	maxRetries := 3
+	retryDelay := 100 * time.Millisecond
+
+	for i, hashData := range block.Data.Data {
+		// 每個 data 項目是一個 32-byte hash
+		if len(hashData) != 32 {
+			s.logger.Warningf("[resolveHashBlock] Entry %d is not a valid hash (len=%d), treating as normal tx data",
+				i, len(hashData))
+			resolvedData = append(resolvedData, hashData)
+			continue
+		}
+
+		hash := hashData
+		var env *common.Envelope
+		var found bool
+
+		// 重試邏輯：如果 TxnPool 中還沒有該交易，等待一下再試
+		for retry := 0; retry <= maxRetries; retry++ {
+			env, found = s.txnPool.Get(hash)
+			if found {
+				break
+			}
+			if retry < maxRetries {
+				s.logger.Debugf("[resolveHashBlock] Hash %x not found, retrying (%d/%d)...",
+					hash[:8], retry+1, maxRetries)
+				time.Sleep(retryDelay)
+			}
+		}
+
+		if found {
+			// 找到交易，序列化並添加到 resolved data
+			data, err := pb.Marshal(env)
+			if err != nil {
+				s.logger.Errorf("[resolveHashBlock] Failed to marshal envelope for hash %x: %v",
+					hash[:8], err)
+				// 保留 hash 作為佔位符
+				resolvedData = append(resolvedData, hash)
+				missingCount++
+				continue
+			}
+			resolvedData = append(resolvedData, data)
+			s.logger.Debugf("[resolveHashBlock] Resolved hash %x successfully", hash[:8])
+		} else {
+			// 找不到交易，保留 hash 作為佔位符
+			s.logger.Warningf("[resolveHashBlock] Transaction hash %x not found in TxnPool after %d retries",
+				hash[:8], maxRetries)
+			resolvedData = append(resolvedData, hash)
+			missingCount++
+		}
+	}
+
+	// 更新 block 的 data
+	block.Data.Data = resolvedData
+
+	// 清除 hash-only 標記（因為現在已經解析為完整交易）
+	if len(block.Metadata.Metadata) > HashOnlyBlockMetadataIndex {
+		block.Metadata.Metadata[HashOnlyBlockMetadataIndex] = nil
+	}
+
+	if missingCount > 0 {
+		s.logger.Warningf("[resolveHashBlock] Block #%d resolved with %d missing transactions out of %d",
+			block.Header.Number, missingCount, len(resolvedData))
+	} else {
+		s.logger.Infof("[resolveHashBlock] Block #%d fully resolved with %d transactions",
+			block.Header.Number, len(resolvedData))
+	}
+
+	return block, nil
+}
+
+// AddTransactionToPool 添加交易到 TxnPool（供 gossip 接收完整交易時使用）
+func (s *GossipStateProviderImpl) AddTransactionToPool(env *common.Envelope) error {
+	if s.txnPool == nil {
+		return errors.New("TxnPool is not initialized")
+	}
+
+	hash, err := ComputeEnvelopeHash(env)
+	if err != nil {
+		return errors.Wrap(err, "failed to compute envelope hash")
+	}
+
+	return s.txnPool.Put(hash, env, DefaultTxnPoolTTL)
+}
+
+// GetTxnPool 返回 TxnPool 的引用（供外部使用）
+func (s *GossipStateProviderImpl) GetTxnPool() *TxnPoolImpl {
+	return s.txnPool
 }

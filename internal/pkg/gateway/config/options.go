@@ -8,6 +8,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -43,7 +45,9 @@ var defaultOptions = Options{
 	BroadcastTimeout:   10 * time.Second,
 	DialTimeout:        30 * time.Second,
 	SequencerTransport: TransportGRPC,
-	SequencerAddress:   "10.140.0.10:7073", // GCP sequencer VM
+	// SequencerAddress:   "10.140.0.10:7073", // GCP sequencer VM
+	// Peer 在 Docker 內、Sequencer 在 host 時請用 host.docker.internal（Mac/Windows）
+	SequencerAddress: "host.docker.internal:7073",
 }
 
 // DefaultOptions gets the default Gateway configuration Options
@@ -119,6 +123,12 @@ func GetOptions(v *viper.Viper) Options {
 		fmt.Printf("🔍 [Config] 讀取 sequencerAddress: %s\n", options.SequencerAddress)
 	} else {
 		fmt.Printf("⚠️  [Config] sequencerAddress 未設置，使用默認值: %s\n", options.SequencerAddress)
+	}
+
+	// 環境變數 CORE_PEER_GATEWAY_SEQUENCER_ADDRESS 可覆寫（方便 Docker 等無法改 core.yaml 時）
+	if envAddr := strings.TrimSpace(os.Getenv("CORE_PEER_GATEWAY_SEQUENCER_ADDRESS")); envAddr != "" {
+		options.SequencerAddress = envAddr
+		fmt.Printf("🔍 [Config] 環境變數覆寫 sequencerAddress: %s\n", options.SequencerAddress)
 	}
 
 	return options

@@ -307,6 +307,15 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 		return
 	}
 
+	// Hash-only block placeholder: 32-byte entries are transaction hashes, not envelopes
+	if len(d) == 32 {
+		results <- &blockValidationResult{
+			tIdx:           tIdx,
+			validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+		}
+		return
+	}
+
 	if env, err := protoutil.GetEnvelopeFromBlock(d); err != nil {
 		logger.Warningf("Error getting tx from block: %+v", err)
 		results <- &blockValidationResult{

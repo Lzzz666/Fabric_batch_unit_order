@@ -65,6 +65,7 @@ type message struct {
 	normalMsg       *cb.Envelope
 	configMsg       *cb.Envelope
 	batch           []*cb.Envelope // 🔥 當 batch != nil 時，表示這是一個 batch，直接使用它創建區塊
+	hashBatch       [][]byte       // 🔥 當 hashBatch != nil 時，表示這是一個 hash-only batch
 }
 
 type batchMessage struct {
@@ -235,9 +236,47 @@ func (ch *chain) OrderBatch(batch []*cb.Envelope, configSeq uint64, sequencerNum
 	}
 }
 
+// OrderHashBatch 接收 hash batch 並發送到 sendChan（用於 hash-only 模式）
+func (ch *chain) OrderHashBatch(hashes [][]byte, configSeq uint64, sequencerNumber uint64) error {
+	if len(hashes) == 0 {
+		return fmt.Errorf("empty hash batch")
+	}
+
+	// 🔥 只有 leader 才能處理 hash batch 排序
+	if !ch.NopaxosServer.nopaxos.IsLeader() {
+		fmt.Printf("[OrderHashBatch] ⏭️  非 leader 節點，跳過 hash batch 處理 (sequencer: %d, hash count: %d)\n",
+			sequencerNumber, len(hashes))
+		return nil
+	}
+
+	// 🔥 使用 non-blocking send 避免永遠阻塞
+	select {
+	case ch.sendChan <- &message{
+		sequencerNumber: sequencerNumber,
+		sessionNumber:   ch.sessionNumber,
+		configSeq:       configSeq,
+		hashBatch:       hashes, // 🔥 設置 hashBatch 字段
+	}:
+		fmt.Printf("[OrderHashBatch] ✓ 成功發送 hash batch 到 sendChan (sequencer: %d, hash count: %d)\n",
+			sequencerNumber, len(hashes))
+		return nil
+	case <-ch.exitChan:
+		return fmt.Errorf("Exiting")
+	default:
+		fmt.Printf("❌ [OrderHashBatch] sendChan 已滿，丟棄 hash batch (sequencer: %d, hash count: %d)\n",
+			sequencerNumber, len(hashes))
+		return fmt.Errorf("sendChan full, dropping hash batch")
+	}
+}
+
 // BatchOrderer 接口用於處理 batch
 type BatchOrderer interface {
 	OrderBatch(batch []*cb.Envelope, configSeq uint64, sequencerNumber uint64) error
+}
+
+// HashBatchOrderer 接口用於處理 hash-only batch
+type HashBatchOrderer interface {
+	OrderHashBatch(hashes [][]byte, configSeq uint64, sequencerNumber uint64) error
 }
 
 // OrderBatchForChain 是導出函數，用於從外部調用 OrderBatch（避免直接訪問私有類型）
@@ -252,6 +291,18 @@ func OrderBatchForChain(chain consensus.Chain, batch []*cb.Envelope, configSeq u
 	// 使用類型斷言訪問私有字段（通過接口無法直接訪問，需要在 OrderBatch 內部檢查）
 	// 這裡先調用 OrderBatch，讓它在內部檢查 leader
 	return batchOrderer.OrderBatch(batch, configSeq, sequencerNumber)
+}
+
+// OrderHashBatchForChain 是導出函數，用於從外部調用 OrderHashBatch（處理 hash-only batch）
+func OrderHashBatchForChain(chain consensus.Chain, hashes [][]byte, configSeq uint64, sequencerNumber uint64) error {
+	// 類型斷言到 HashBatchOrderer 接口
+	hashBatchOrderer, ok := chain.(HashBatchOrderer)
+	if !ok {
+		return fmt.Errorf("chain does not support hash batch ordering")
+	}
+
+	// 調用 OrderHashBatch，讓它在內部檢查 leader
+	return hashBatchOrderer.OrderHashBatch(hashes, configSeq, sequencerNumber)
 }
 
 // Order accepts normal messages for ordering
@@ -920,7 +971,65 @@ func (ch *chain) main() {
 			fmt.Println(msg.sequencerNumber)
 			fmt.Println("===========================")
 
-			// 🔥 優先處理 batch：如果 message 包含 batch，直接使用它創建區塊
+			// 🔥 Debug: 顯示消息內容
+			fmt.Printf("🔍 [NOPaxos main] 消息類型檢查: batch_len=%d, hashBatch_len=%d, normalMsg=%v, configMsg=%v\n",
+				len(msg.batch), len(msg.hashBatch), msg.normalMsg != nil, msg.configMsg != nil)
+
+			// 🔥 優先處理 hash batch：如果 message 包含 hashBatch，創建 hash-only 區塊
+			if len(msg.hashBatch) > 0 {
+				fmt.Printf("✅ [NOPaxos main] 收到 hash batch! hash_count=%d\n", len(msg.hashBatch))
+				// 🔥 只有 leader 才能創建區塊
+				if !ch.NopaxosServer.nopaxos.IsLeader() {
+					fmt.Printf("[main] ⏭️  非 leader 節點，跳過 hash batch 處理 (sequencer: %d, hash count: %d)\n",
+						msg.sequencerNumber, len(msg.hashBatch))
+					continue
+				}
+
+				fmt.Printf("[main] 🔨 收到 hash batch，創建 hash-only 區塊 (hash count: %d, sequencer: %d)\n",
+					len(msg.hashBatch), msg.sequencerNumber)
+
+				// 使用 CreateNextHashBlock 創建 hash-only 區塊
+				block := ch.support.CreateNextHashBlock(msg.hashBatch)
+
+				// 🔥 調試：檢查區塊順序
+				currentHeight := ch.support.Height()
+				expectedBlockNum := currentHeight
+				if block.Header.Number != expectedBlockNum {
+					logger.Warningf("⚠️  區塊編號不匹配！期望: %d, 實際: %d (sequencer: %d)",
+						expectedBlockNum, block.Header.Number, msg.sequencerNumber)
+				}
+
+				fmt.Printf("[main] ✓ Hash-only 區塊已創建 (block #%d, hash count: %d, sequencer: %d, current height: %d)\n",
+					block.Header.Number, len(msg.hashBatch), msg.sequencerNumber, currentHeight)
+
+				// 寫入區塊
+				fmt.Printf("[main] 💾 開始寫入 hash-only 區塊 #%d (PreviousHash: %x)...\n",
+					block.Header.Number, block.Header.PreviousHash[:8])
+
+				heightBefore := ch.support.Height()
+				ch.support.WriteBlock(block, nil)
+
+				// 等待一下讓異步寫入完成
+				time.Sleep(100 * time.Millisecond)
+				heightAfter := ch.support.Height()
+
+				fmt.Printf("[main] ✓ Hash-only 區塊 #%d WriteBlock 返回 (height: %d → %d)\n",
+					block.Header.Number, heightBefore, heightAfter)
+
+				if heightAfter <= heightBefore {
+					fmt.Printf("⚠️  [main] WARNING: Height 沒有增加！Block 可能沒有被正確寫入！\n")
+				}
+
+				// 清空本地 batch
+				ch.batch = []*cb.Envelope{}
+
+				if timer != nil {
+					timer = nil
+				}
+				continue
+			}
+
+			// 🔥 處理完整 batch：如果 message 包含 batch，直接使用它創建區塊
 			if len(msg.batch) > 0 {
 				// 🔥 只有 leader 才能創建區塊
 				if !ch.NopaxosServer.nopaxos.IsLeader() {

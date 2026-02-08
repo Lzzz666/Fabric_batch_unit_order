@@ -555,9 +555,25 @@ func (gc *gossipChannel) EligibleForChannel(member discovery.NetworkMember) bool
 	return msg != nil
 }
 
+// isTxnBroadcastPayload checks if a payload is a transaction broadcast message
+func isTxnBroadcastPayload(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	magic := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+	return magic == TxnBroadcastMagic
+}
+
 // AddToMsgStore adds a given GossipMessage to the message store
 func (gc *gossipChannel) AddToMsgStore(msg *protoext.SignedGossipMessage) {
 	if protoext.IsDataMsg(msg.GossipMessage) {
+		// 🔥 Skip transaction broadcast messages - don't add to blockMsgStore
+		payload := msg.GetDataMsg().GetPayload()
+		if payload != nil && isTxnBroadcastPayload(payload.Data) {
+			gc.logger.Debug("Skipping transaction broadcast message in AddToMsgStore")
+			return
+		}
+
 		gc.Lock()
 		defer gc.Unlock()
 		added := gc.blockMsgStore.Add(msg)
@@ -637,6 +653,18 @@ func (gc *gossipChannel) HandleMessage(msg protoext.ReceivedMessage) {
 				gc.logger.Warning("Payload is empty, got it from", msg.GetConnectionInfo().ID)
 				return
 			}
+
+			// 🔥 Check if this is a transaction broadcast message
+			payload := m.GetDataMsg().GetPayload()
+			if payload != nil && isTxnBroadcastPayload(payload.Data) {
+				// Transaction broadcast - only demultiplex to local subscribers
+				// Do NOT forward - the original sender already broadcasts to all peers
+				gc.DeMultiplex(m)
+				gc.logger.Debug("Received transaction broadcast, demultiplexed to local subscribers")
+				return
+			}
+
+			// Regular block message - original logic
 			// Would this block go into the message store if it was verified?
 			if !gc.blockMsgStore.CheckValid(msg.GetGossipMessage()) {
 				return
@@ -799,6 +827,10 @@ func (gc *gossipChannel) handleStateInfSnapshot(m *proto.GossipMessage, sender c
 	}
 }
 
+// TxnBroadcastMagic is the magic number for transaction broadcast messages
+// 0x54584E45 = "TXNE" (Transaction Envelope)
+const TxnBroadcastMagic uint32 = 0x54584E45
+
 func (gc *gossipChannel) verifyBlock(msg *proto.GossipMessage, sender common.PKIidType) bool {
 	if !protoext.IsDataMsg(msg) {
 		gc.logger.Warning("Received from ", sender, "a DataUpdate message that contains a non-block GossipMessage:", msg)
@@ -809,8 +841,22 @@ func (gc *gossipChannel) verifyBlock(msg *proto.GossipMessage, sender common.PKI
 		gc.logger.Warning("Received empty payload from", sender)
 		return false
 	}
+
+	// 🔥 Check if this is a transaction broadcast message (not a block)
+	// Transaction broadcast format: [4B magic=0x54584E45][32B hash][envelope bytes]
+	rawData := payload.Data
+	if len(rawData) >= 4 {
+		magic := uint32(rawData[0])<<24 | uint32(rawData[1])<<16 | uint32(rawData[2])<<8 | uint32(rawData[3])
+		if magic == TxnBroadcastMagic {
+			// This is a transaction broadcast message, skip block verification
+			// It will be processed by state.go's receiveAndQueueGossipMessages
+			gc.logger.Debug("Received transaction broadcast message, skipping block verification")
+			return true
+		}
+	}
+
 	seqNum := payload.SeqNum
-	rawBlock := payload.Data
+	rawBlock := rawData
 	block, err := protoutil.UnmarshalBlock(rawBlock)
 	if err != nil {
 		gc.logger.Warningf("Received improperly encoded block from %v in DataUpdate: %+v", sender, err)

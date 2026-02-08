@@ -14,8 +14,7 @@ import (
 func (gs *Server) connectGRPC() error {
 	address := gs.options.SequencerAddress
 	if address == "" {
-		// address = "172.20.10.5:7073" // 默認 gRPC 端口（不同於 UDP 的 7072）
-		address = "10.140.0.10:7073"
+		address = "host.docker.internal:7073" // Peer 在 Docker、Sequencer 在 host 時（Mac/Windows）
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 正在連接到 sequencer: %s\n", address)
@@ -87,7 +86,7 @@ func (gs *Server) reconnectGRPC() error {
 
 	address := gs.options.SequencerAddress
 	if address == "" {
-		address = "172.20.10.5:7073" // 默認 gRPC 端口
+		address = "host.docker.internal:7073" // Peer 在 Docker、Sequencer 在 host 時（Mac/Windows）
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 重新連接到 sequencer: %s (阻塞模式, timeout=%v)\n", address, gs.options.DialTimeout)
@@ -112,6 +111,7 @@ func (gs *Server) reconnectGRPC() error {
 		fmt.Printf("   1. Sequencer 是否正在運行？\n")
 		fmt.Printf("   2. Sequencer 的 gRPC 服務是否已啟動（端口 7073）？\n")
 		fmt.Printf("   3. 網絡連接是否正常（從容器內能否訪問 %s）？\n", address)
+		fmt.Printf("   4. Peer 在 Docker、Sequencer 在 host 時請用 host.docker.internal:7073（Mac/Windows）；Linux 需 --add-host=host.docker.internal:host-gateway\n")
 		return fmt.Errorf("error reconnecting to sequencer via gRPC: %w", err)
 	}
 

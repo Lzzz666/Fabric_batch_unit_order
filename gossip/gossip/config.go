@@ -119,7 +119,7 @@ func (c *Config) loadConfig(endpoint string, certs *common.TLSCertificates, boot
 	c.BindPort = int(port)
 	c.BootstrapPeers = bootPeers
 	c.ID = endpoint
-	c.MaxBlockCountToStore = util.GetIntOrDefault("peer.gossip.maxBlockCountToStore", 10)
+	c.MaxBlockCountToStore = util.GetIntOrDefault("peer.gossip.maxBlockCountToStore", 1000) // 增大，防止亂序 block 被丟棄
 	c.MaxPropagationBurstLatency = util.GetDurationOrDefault("peer.gossip.maxPropagationBurstLatency", 10*time.Millisecond)
 	c.MaxPropagationBurstSize = util.GetIntOrDefault("peer.gossip.maxPropagationBurstSize", 10)
 	c.PropagateIterations = util.GetIntOrDefault("peer.gossip.propagateIterations", 1)

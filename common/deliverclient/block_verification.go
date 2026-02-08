@@ -251,7 +251,8 @@ func (a *BlockVerificationAssistant) VerifyBlock(block *common.Block) error {
 		return err
 	}
 	fmt.Println("[lzzz debug] verifyMetadata success")
-	dataHash, err := protoutil.BlockDataHash(block.Data)
+	// Use BlockDataHashForVerification to support hash-only blocks (Data contains hashes, not envelopes)
+	dataHash, err := protoutil.BlockDataHashForVerification(block)
 	if err != nil {
 		return errors.Wrapf(err, "failed to verify transactions are well formed for block with id [%d] on channel [%s]", block.Header.Number, a.channelID)
 	}

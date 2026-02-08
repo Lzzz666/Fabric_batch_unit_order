@@ -10,11 +10,13 @@ import (
 	"net"
 
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	gproto "github.com/hyperledger/fabric-protos-go-apiv2/gossip"
 	peerproto "github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/deliverclient/orderers"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/scc"
+	gcommon "github.com/hyperledger/fabric/gossip/common"
 	gdiscovery "github.com/hyperledger/fabric/gossip/discovery"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/internal/pkg/gateway/commit"
@@ -24,6 +26,20 @@ import (
 )
 
 var logger = flogging.MustGetLogger("gateway")
+
+// TxnPoolInterface defines the interface for transaction pool operations
+type TxnPoolInterface interface {
+	Put(hash []byte, envelope interface{}, ttl interface{}) error
+	Get(hash []byte) (interface{}, bool)
+}
+
+// GossipBroadcaster defines the interface for gossip broadcasting
+type GossipBroadcaster interface {
+	// Gossip sends a message to other peers in the network
+	Gossip(msg *gproto.GossipMessage)
+	// PeersOfChannel returns the NetworkMembers subscribed to the channel
+	PeersOfChannel(gcommon.ChannelID) []gdiscovery.NetworkMember
+}
 
 // Server represents the GRPC server for the Gateway.
 type Server struct {
@@ -37,6 +53,8 @@ type Server struct {
 	UdpGateway       *net.UDPConn
 	GrpcGateway      grpc.ClientConnInterface // gRPC 客戶端連接
 	batchCollector   *SimpleBatchCollector    // 批次收集器
+	txnPool          TxnPoolInterface         // TxnPool for hash-only mode
+	gossipService    GossipBroadcaster        // Gossip service for broadcasting transactions
 }
 
 type EndorserServerAdapter struct {
@@ -88,11 +106,18 @@ func CreateServer(
 		systemChaincodes,
 		peerInstance.OrdererEndpointOverrides,
 		peerInstance.GetChannelConfig,
+		peerInstance.GossipService, // Pass GossipService for transaction broadcasting
 	)
 
 	peerInstance.AddConfigCallbacks(server.registry.configUpdate)
 
 	return server
+}
+
+// SetTxnPool sets the TxnPool for storing transactions in hash-only mode
+func (s *Server) SetTxnPool(pool TxnPoolInterface) {
+	s.txnPool = pool
+	logger.Infof("TxnPool set for Gateway hash-only mode")
 }
 
 func newServer(localEndorser peerproto.EndorserClient,
@@ -107,6 +132,7 @@ func newServer(localEndorser peerproto.EndorserClient,
 	systemChaincodes scc.BuiltinSCCs,
 	ordererEndpointOverrides map[string]*orderers.Endpoint,
 	getChannelConfig channelConfigGetter,
+	gossipService GossipBroadcaster,
 ) *Server {
 
 	s := &Server{
@@ -134,6 +160,7 @@ func newServer(localEndorser peerproto.EndorserClient,
 		logger:           logger,
 		ledgerProvider:   ledgerProvider,
 		getChannelConfig: getChannelConfig,
+		gossipService:    gossipService,
 	}
 
 	// 嘗試連接到 sequencer，但不阻塞啟動（連接失敗時會在首次使用時重試）

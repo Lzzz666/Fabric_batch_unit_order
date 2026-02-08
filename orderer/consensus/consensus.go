@@ -113,6 +113,10 @@ type ConsenterSupport interface {
 	// Note that either WriteBlock or WriteConfigBlock must be called before invoking this method a second time.
 	CreateNextBlock(messages []*cb.Envelope) *cb.Block
 
+	// CreateNextHashBlock creates a hash-only block containing transaction hashes instead of full envelopes.
+	// This is used for hash-only batch mode where full transactions are sent via gossip.
+	CreateNextHashBlock(hashes [][]byte) *cb.Block
+
 	// Block returns a block with the given number,
 	// or nil if such a block doesn't exist.
 	Block(number uint64) *cb.Block

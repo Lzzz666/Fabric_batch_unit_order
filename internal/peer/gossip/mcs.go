@@ -135,14 +135,19 @@ func (s *MSPMessageCryptoService) VerifyBlock(chainID common.ChannelID, seqNum u
 		return fmt.Errorf("Claimed seqNum is [%d] but actual seqNum inside block is [%d]", seqNum, blockSeqNum)
 	}
 
-	// - Extract channelID and compare with chainID
-	channelID, err := protoutil.GetChannelIDFromBlock(block)
-	if err != nil {
-		return fmt.Errorf("Failed getting channel id from block with id [%d] on channel [%s]: [%s]", block.Header.Number, chainID, err)
-	}
-
-	if channelID != string(chainID) {
-		return fmt.Errorf("Invalid block's channel id. Expected [%s]. Given [%s]", chainID, channelID)
+	// - Extract channelID and compare with chainID (hash-only blocks have hashes in Data, not envelopes)
+	var channelID string
+	if protoutil.IsHashOnlyBlock(block) {
+		channelID = string(chainID)
+	} else {
+		var err error
+		channelID, err = protoutil.GetChannelIDFromBlock(block)
+		if err != nil {
+			return fmt.Errorf("Failed getting channel id from block with id [%d] on channel [%s]: [%s]", block.Header.Number, chainID, err)
+		}
+		if channelID != string(chainID) {
+			return fmt.Errorf("Invalid block's channel id. Expected [%s]. Given [%s]", chainID, channelID)
+		}
 	}
 
 	// - Unmarshal medatada
@@ -150,7 +155,8 @@ func (s *MSPMessageCryptoService) VerifyBlock(chainID common.ChannelID, seqNum u
 		return fmt.Errorf("Block with id [%d] on channel [%s] does not have metadata. Block not valid.", block.Header.Number, chainID)
 	}
 
-	dataHash, err := protoutil.BlockDataHash(block.Data)
+	// Use BlockDataHashForVerification to support hash-only blocks (Data contains hashes, not envelopes)
+	dataHash, err := protoutil.BlockDataHashForVerification(block)
 	if err != nil {
 		return err
 	}

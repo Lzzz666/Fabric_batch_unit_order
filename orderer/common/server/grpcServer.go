@@ -75,6 +75,12 @@ func (s *OrdererGRPCServer) SubmitBatch(ctx context.Context, req *sequencerpb.Su
 
 	// 檢測是否為批次包
 	batchFlag := uint16(batchDataCopy[2])<<8 | uint16(batchDataCopy[3])
+
+	// 處理 hash-only batch (flag = 0xFFFE)
+	if batchFlag == 0xFFFE {
+		return s.processHashOnlyBatch(batchDataCopy, bigEndianValue)
+	}
+
 	if batchFlag == 0xFFFF {
 		// 這是批次包，解析 batch
 		if len(batchDataCopy) < 8 {
@@ -382,4 +388,95 @@ func (gs *GrpcServer) Start() error {
 func (gs *GrpcServer) Close() {
 	fmt.Println("Closing gRPC server on", gs.host, ":", gs.port)
 	close(gs.exitChanGRPC)
+}
+
+// processHashOnlyBatch 處理 hash-only batch (flag = 0xFFFE)
+// 格式: [2B reserved][2B flag=0xFFFE][4B txnCount][N * 32B hash][4B seqNum]
+func (s *OrdererGRPCServer) processHashOnlyBatch(batchDataCopy []byte, seqNum uint64) (*sequencerpb.SubmitBatchResponse, error) {
+	fmt.Printf("📦 [gRPC Server Port %d] 收到 hash-only batch (sequencer: %d)\n", s.port, seqNum)
+
+	if len(batchDataCopy) < 12 { // 2 + 2 + 4 + 4 minimum
+		return &sequencerpb.SubmitBatchResponse{
+			Success:        false,
+			ErrorMessage:   "hash batch packet too small",
+			SequenceNumber: 0,
+		}, nil
+	}
+
+	// 解析交易數量
+	txnCount := binary.BigEndian.Uint32(batchDataCopy[4:8])
+	if txnCount == 0 {
+		return &sequencerpb.SubmitBatchResponse{
+			Success:        false,
+			ErrorMessage:   "hash batch transaction count is zero",
+			SequenceNumber: 0,
+		}, nil
+	}
+
+	// 驗證包大小是否正確
+	expectedSize := 2 + 2 + 4 + int(txnCount)*32 + 4
+	if len(batchDataCopy) < expectedSize {
+		return &sequencerpb.SubmitBatchResponse{
+			Success:        false,
+			ErrorMessage:   fmt.Sprintf("hash batch packet size mismatch: expected %d, got %d", expectedSize, len(batchDataCopy)),
+			SequenceNumber: 0,
+		}, nil
+	}
+
+	fmt.Printf("📦 [gRPC Server Port %d] 開始解析 hash batch (hash 數量: %d, sequencer: %d)\n",
+		s.port, txnCount, seqNum)
+
+	// 解析所有 hash
+	hashes := make([][]byte, txnCount)
+	offset := 8 // 跳過 2 reserved + 2 flag + 4 txnCount
+
+	for i := uint32(0); i < txnCount; i++ {
+		hash := make([]byte, 32)
+		copy(hash, batchDataCopy[offset:offset+32])
+		hashes[i] = hash
+		offset += 32
+	}
+
+	fmt.Printf("📦 [gRPC Server Port %d] 解析完成: %d hashes (第一個 hash: %x...)\n",
+		s.port, len(hashes), hashes[0][:8])
+
+	// 🔥 Hash-only batch 不做 ProcessNormalMsg 驗證
+	// 因為沒有完整的 Envelope，無法進行傳統驗證
+	// 驗證將在 Peer 端收到 block 後，從 TxnPool 取回完整交易時進行
+
+	// 獲取默認 channel（因為 hash-only batch 不包含 channel 信息）
+	// TODO: 可以考慮在 packet 中添加 channel ID
+	channelID := "mychannel" // 預設 channel
+
+	// 獲取 chain 並調用 OrderHashBatch
+	chain := s.registrar.GetConsensusChain(channelID)
+	if chain == nil {
+		return &sequencerpb.SubmitBatchResponse{
+			Success:        false,
+			ErrorMessage:   fmt.Sprintf("cannot get chain (channel: %s)", channelID),
+			SequenceNumber: 0,
+		}, nil
+	}
+
+	startTime := time.Now()
+	err := nopaxos.OrderHashBatchForChain(chain, hashes, 0, seqNum)
+
+	if err != nil {
+		fmt.Printf("❌ [gRPC Server Port %d] OrderHashBatch 失敗: %v (耗時: %v)\n",
+			s.port, err, time.Since(startTime))
+		return &sequencerpb.SubmitBatchResponse{
+			Success:        false,
+			ErrorMessage:   fmt.Sprintf("OrderHashBatch failed: %v", err),
+			SequenceNumber: 0,
+		}, nil
+	}
+
+	fmt.Printf("✅ [gRPC Server Port %d] Hash Batch 處理成功 (sequencer: %d, hash count: %d, 耗時: %v)\n",
+		s.port, seqNum, len(hashes), time.Since(startTime))
+
+	return &sequencerpb.SubmitBatchResponse{
+		Success:        true,
+		ErrorMessage:   "",
+		SequenceNumber: uint32(seqNum),
+	}, nil
 }

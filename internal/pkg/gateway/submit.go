@@ -8,6 +8,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -18,8 +21,10 @@ import (
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	gp "github.com/hyperledger/fabric-protos-go-apiv2/gateway"
+	gproto "github.com/hyperledger/fabric-protos-go-apiv2/gossip"
 	ab "github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
+	"github.com/hyperledger/fabric/gossip/state"
 	"github.com/hyperledger/fabric/internal/pkg/gateway/config"
 	"github.com/hyperledger/fabric/internal/pkg/gateway/sequencerpb"
 	"github.com/hyperledger/fabric/protoutil"
@@ -37,22 +42,38 @@ var count uint64 = 0
 type SimpleBatchCollector struct {
 	mu            sync.Mutex
 	buffer        []*common.Envelope
+	hashes        [][]byte // hash buffer for hash-only batch
 	batchSize     int
 	timeout       time.Duration
 	timer         *time.Timer
 	sendFunc      func([]*common.Envelope) error
+	sendHashFunc  func([][]byte) error // hash-only batch send function
+	storeTxnFunc  func([]byte, *common.Envelope) error // store transaction in TxnPool
 	batchCount    uint64
 	totalTxnCount uint64
 }
 
 // NewSimpleBatchCollector 創建簡單批次收集器
-func NewSimpleBatchCollector(batchSize int, timeout time.Duration, sendFunc func([]*common.Envelope) error) *SimpleBatchCollector {
+func NewSimpleBatchCollector(batchSize int, timeout time.Duration, sendFunc func([]*common.Envelope) error, sendHashFunc func([][]byte) error, storeTxnFunc func([]byte, *common.Envelope) error) *SimpleBatchCollector {
 	return &SimpleBatchCollector{
-		buffer:    make([]*common.Envelope, 0, batchSize),
-		batchSize: batchSize,
-		timeout:   timeout,
-		sendFunc:  sendFunc,
+		buffer:       make([]*common.Envelope, 0, batchSize),
+		hashes:       make([][]byte, 0, batchSize),
+		batchSize:    batchSize,
+		timeout:      timeout,
+		sendFunc:     sendFunc,
+		sendHashFunc: sendHashFunc,
+		storeTxnFunc: storeTxnFunc,
 	}
+}
+
+// computeEnvelopeHash 計算交易的 SHA256 hash
+func computeEnvelopeHash(env *common.Envelope) ([]byte, error) {
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(data)
+	return hash[:], nil
 }
 
 // Add 添加交易到批次
@@ -60,13 +81,29 @@ func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
 	sbc.mu.Lock()
 	defer sbc.mu.Unlock()
 
+	// 計算交易 hash
+	hash, err := computeEnvelopeHash(txn)
+	if err != nil {
+		return fmt.Errorf("failed to compute envelope hash: %w", err)
+	}
+
+	// 🔥 存儲交易到 TxnPool（用於 hash-only 模式）
+	if sbc.storeTxnFunc != nil {
+		if err := sbc.storeTxnFunc(hash, txn); err != nil {
+			fmt.Printf("⚠️  [Batch] 存儲交易到 TxnPool 失敗: %v\n", err)
+			// 繼續處理，不阻止批次發送
+		}
+	}
+
 	// 添加到緩衝區
 	sbc.buffer = append(sbc.buffer, txn)
+	sbc.hashes = append(sbc.hashes, hash)
 	sbc.totalTxnCount++
 
 	// 如果是第一筆交易，啟動計時器
 	if len(sbc.buffer) == 1 {
-		fmt.Printf("⏳ [Batch] 第一筆交易加入，啟動 %v 超時計時器 (total=%d)\n", sbc.timeout, sbc.totalTxnCount)
+		fmt.Printf("⏳ [Batch] 第一筆交易加入，啟動 %v 超時計時器 (total=%d, hash=%s)\n",
+			sbc.timeout, sbc.totalTxnCount, hex.EncodeToString(hash)[:16])
 		sbc.timer = time.AfterFunc(sbc.timeout, func() {
 			sbc.mu.Lock()
 			defer sbc.mu.Unlock()
@@ -76,7 +113,8 @@ func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
 			}
 		})
 	} else {
-		fmt.Printf("📝 [Batch] 交易加入 batch: buffer size=%d/%d, total=%d\n", len(sbc.buffer), sbc.batchSize, sbc.totalTxnCount)
+		fmt.Printf("📝 [Batch] 交易加入 batch: buffer size=%d/%d, total=%d, hash=%s\n",
+			len(sbc.buffer), sbc.batchSize, sbc.totalTxnCount, hex.EncodeToString(hash)[:16])
 	}
 
 	// 檢查是否達到批次大小
@@ -99,18 +137,28 @@ func (sbc *SimpleBatchCollector) flushLocked() error {
 		sbc.timer = nil
 	}
 
-	// 複製批次
-	batch := make([]*common.Envelope, len(sbc.buffer))
-	copy(batch, sbc.buffer)
+	// 複製 hash 批次
+	hashBatch := make([][]byte, len(sbc.hashes))
+	copy(hashBatch, sbc.hashes)
+
+	// 複製完整交易批次（用於 gossip 廣播）
+	txnBatch := make([]*common.Envelope, len(sbc.buffer))
+	copy(txnBatch, sbc.buffer)
 
 	// 清空緩衝區
 	sbc.buffer = sbc.buffer[:0]
+	sbc.hashes = sbc.hashes[:0]
 	sbc.batchCount++
 
-	fmt.Printf("📦 [Batch] Flushing batch #%d with %d txns\n", sbc.batchCount, len(batch))
+	fmt.Printf("📦 [Batch] Flushing batch #%d with %d txns (hash-only mode)\n", sbc.batchCount, len(hashBatch))
 
-	// 發送批次
-	return sbc.sendFunc(batch)
+	// 發送 hash-only batch（快速路徑）
+	if sbc.sendHashFunc != nil {
+		return sbc.sendHashFunc(hashBatch)
+	}
+
+	// Fallback: 發送完整交易批次（向後兼容）
+	return sbc.sendFunc(txnBatch)
 }
 
 // Submit will send the signed transaction to the ordering service. The response indicates whether the transaction was
@@ -281,20 +329,58 @@ func (gs *Server) submitNonBFT(ctx context.Context, orderers []*orderer, txn *co
 		batchSize := 100                      // 批次大小：100 筆交易
 		batchTimeout := 10 * time.Millisecond // 超時：10ms
 
-		fmt.Printf("🚀 [Batch] 初始化批次收集器: size=%d, timeout=%v, transport=%s\n",
+		fmt.Printf("🚀 [Batch] 初始化批次收集器 (hash-only mode): size=%d, timeout=%v, transport=%s\n",
 			batchSize, batchTimeout, gs.options.SequencerTransport)
 
+		// 完整交易發送函數（用於向後兼容）
 		var sendFunc func([]*common.Envelope) error
+		// hash-only batch 發送函數（主要路徑）
+		var sendHashFunc func([][]byte) error
+		// 交易存儲函數（存入 TxnPool）
+		var storeTxnFunc func([]byte, *common.Envelope) error
+
 		if gs.options.SequencerTransport == config.TransportGRPC {
 			sendFunc = gs.broadcastBatchByGRPC
+			sendHashFunc = gs.broadcastHashBatchByGRPC
 		} else {
 			sendFunc = gs.broadcastBatchByUDP
+			sendHashFunc = gs.broadcastHashBatchByUDP
 		}
+
+		// 設置交易存儲函數 - 使用 global TxnPool（與 GossipStateProvider 共享）
+		// 注意：這裡的 channelID 需要從 request 中獲取
+		storeTxnFunc = func(hash []byte, env *common.Envelope) error {
+			// 嘗試從所有已知的 channel 獲取 TxnPool
+			channelID := "mychannel" // 預設 channel，實際應從交易中提取
+			fmt.Printf("💾 [Gateway] 嘗試存儲交易到 TxnPool (channel=%s, hash=%x...)\n",
+				channelID, hash[:8])
+
+			pool, exists := state.GetGlobalTxnPoolIfExists(channelID)
+			if !exists {
+				fmt.Printf("⚠️  [Gateway] TxnPool for channel %s NOT FOUND! 交易將無法被解析\n", channelID)
+				return nil // 不阻塞，繼續處理
+			}
+
+			err := pool.Put(hash, env, state.DefaultTxnPoolTTL)
+			if err != nil {
+				fmt.Printf("❌ [Gateway] 存儲交易失敗: %v\n", err)
+				return err
+			}
+			fmt.Printf("✅ [Gateway] 交易已存儲到 TxnPool (pool_size=%d)\n", pool.Size())
+
+			// 🔥 通過 gossip 廣播交易給其他 peer
+			gs.broadcastTxnViaGossip(channelID, hash, env)
+
+			return nil
+		}
+		fmt.Printf("✅ [Batch] 交易存儲函數已設置，將使用 global TxnPool + Gossip 廣播\n")
 
 		gs.batchCollector = NewSimpleBatchCollector(
 			batchSize,
 			batchTimeout,
 			sendFunc,
+			sendHashFunc,
+			storeTxnFunc,
 		)
 	}
 	// fmt.Printf("[lz debug] txn: %x\n", txn)
@@ -324,6 +410,46 @@ func (gs *Server) broadcast(ctx context.Context, orderer *orderer, txn *common.E
 	}
 
 	return response, nil
+}
+
+// buildHashBatchPacket 構建 hash-only 批次封包
+// 格式: [2B reserved][2B flag=0xFFFE][4B txnCount][N * 32B hash][4B seqNum reserved]
+func (gs *Server) buildHashBatchPacket(hashes [][]byte) ([]byte, error) {
+	if len(hashes) == 0 {
+		return nil, fmt.Errorf("empty hash batch")
+	}
+
+	// 計算總包大小
+	// 2 (front reserve) + 2 (batch flag) + 4 (txn count) + N*32 (hashes) + 4 (seq reserve)
+	batchPacketSize := 2 + 2 + 4 + (len(hashes) * 32) + 4
+	batchPacket := make([]byte, 0, batchPacketSize)
+
+	// 1. 前置保留位 (2 bytes)
+	batchPacket = append(batchPacket, 0x00, 0x00)
+
+	// 2. Hash Batch 標記 (2 bytes): 0xFF 0xFE 表示這是一個 hash-only batch
+	batchPacket = append(batchPacket, 0xFF, 0xFE)
+
+	// 3. 交易數量 (4 bytes, big-endian)
+	txnCount := uint32(len(hashes))
+	batchPacket = append(batchPacket,
+		byte(txnCount>>24),
+		byte(txnCount>>16),
+		byte(txnCount>>8),
+		byte(txnCount))
+
+	// 4. 依次添加每個 hash (32 bytes each)
+	for _, hash := range hashes {
+		if len(hash) != 32 {
+			return nil, fmt.Errorf("invalid hash length: expected 32, got %d", len(hash))
+		}
+		batchPacket = append(batchPacket, hash...)
+	}
+
+	// 5. 後置 sequencer 預留位 (4 bytes) - sequencer 會填入 sequencer number
+	batchPacket = append(batchPacket, 0x00, 0x00, 0x00, 0x00)
+
+	return batchPacket, nil
 }
 
 // buildBatchPacket 構建批次封包（UDP 和 gRPC 共用）
@@ -385,7 +511,129 @@ func (gs *Server) buildBatchPacket(batch []*common.Envelope) ([]byte, error) {
 	return batchPacket, nil
 }
 
-// broadcastBatchByUDP 批次發送交易到 sequencer (UDP)
+// broadcastHashBatchByUDP 批次發送 hash-only batch 到 sequencer (UDP)
+func (gs *Server) broadcastHashBatchByUDP(hashes [][]byte) error {
+	if len(hashes) == 0 {
+		return fmt.Errorf("empty hash batch")
+	}
+
+	fmt.Printf("📤 [HashBatchUDP] Broadcasting hash batch of %d transactions\n", len(hashes))
+	startTime := time.Now()
+
+	// 構建 hash batch 封包
+	batchPacket, err := gs.buildHashBatchPacket(hashes)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("📊 [HashBatchUDP] Packet: %d bytes, %d hashes (32 bytes each)\n",
+		len(batchPacket), len(hashes))
+
+	// 發送 hash batch 包
+	n, err := gs.UdpGateway.Write(batchPacket)
+	if err == nil && n != len(batchPacket) {
+		fmt.Printf("⚠️  [HashBatchUDP] 部分發送: 只發送了 %d/%d bytes\n", n, len(batchPacket))
+	}
+	if err != nil {
+		// 嘗試重連
+		if err := gs.reconnect(); err != nil {
+			return fmt.Errorf("failed to reconnect: %w", err)
+		}
+
+		// 重試發送
+		_, err = gs.UdpGateway.Write(batchPacket)
+		if err != nil {
+			return fmt.Errorf("failed to resend hash batch after reconnecting: %w", err)
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(len(hashes)) / elapsed.Seconds()
+	fmt.Printf("✅ [HashBatchUDP] Sent %d hashes in %v (%.0f hash/s)\n",
+		len(hashes), elapsed, throughput)
+
+	return nil
+}
+
+// broadcastHashBatchByGRPC 批次發送 hash-only batch 到 sequencer (gRPC)
+func (gs *Server) broadcastHashBatchByGRPC(hashes [][]byte) error {
+	if len(hashes) == 0 {
+		return fmt.Errorf("empty hash batch")
+	}
+
+	fmt.Printf("📤 [HashBatchGRPC] Broadcasting hash batch of %d transactions\n", len(hashes))
+	startTime := time.Now()
+
+	// 構建 hash batch 封包
+	batchPacket, err := gs.buildHashBatchPacket(hashes)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("📊 [HashBatchGRPC] Packet: %d bytes, %d hashes (32 bytes each)\n",
+		len(batchPacket), len(hashes))
+
+	// 檢查 gRPC 連接
+	if gs.GrpcGateway == nil {
+		fmt.Printf("⚠️  [HashBatchGRPC] gRPC 連接未建立，使用阻塞模式連接...\n")
+		if err := gs.reconnectGRPC(); err != nil {
+			return fmt.Errorf("failed to establish gRPC connection: %w", err)
+		}
+	} else {
+		if conn, ok := gs.GrpcGateway.(*grpc.ClientConn); ok {
+			state := conn.GetState()
+			if state != connectivity.Ready {
+				fmt.Printf("⚠️  [HashBatchGRPC] gRPC 連接狀態: %v，嘗試重新連接...\n", state)
+				if err := gs.reconnectGRPC(); err != nil {
+					return fmt.Errorf("failed to reconnect gRPC (state: %v): %w", state, err)
+				}
+			}
+		}
+	}
+
+	// 創建 gRPC 客戶端
+	client := sequencerpb.NewSequencerServiceClient(gs.GrpcGateway)
+
+	// 創建帶超時的 context
+	ctx, cancel := context.WithTimeout(context.Background(), gs.options.BroadcastTimeout)
+	defer cancel()
+
+	// 發送 hash batch 請求
+	req := &sequencerpb.SubmitBatchRequest{
+		BatchData: batchPacket,
+	}
+
+	fmt.Printf("🚀 [HashBatchGRPC] 發送到 sequencer: %s, packet size=%d bytes\n",
+		gs.options.SequencerAddress, len(batchPacket))
+	resp, err := client.SubmitBatch(ctx, req)
+	if err != nil {
+		// 嘗試重連
+		if reconnErr := gs.reconnectGRPC(); reconnErr != nil {
+			return fmt.Errorf("failed to reconnect: %w", reconnErr)
+		}
+
+		// 重試發送
+		client = sequencerpb.NewSequencerServiceClient(gs.GrpcGateway)
+		resp, err = client.SubmitBatch(ctx, req)
+		if err != nil {
+			return fmt.Errorf("failed to submit hash batch via gRPC after reconnect: %w", err)
+		}
+	}
+
+	// 檢查響應
+	if !resp.Success {
+		return fmt.Errorf("sequencer rejected hash batch: %s", resp.ErrorMessage)
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(len(hashes)) / elapsed.Seconds()
+	fmt.Printf("✅ [HashBatchGRPC] Sent %d hashes in %v (%.0f hash/s), seq=%d\n",
+		len(hashes), elapsed, throughput, resp.SequenceNumber)
+
+	return nil
+}
+
+// broadcastBatchByUDP 批次發送交易到 sequencer (UDP) - 保留用於向後兼容
 func (gs *Server) broadcastBatchByUDP(batch []*common.Envelope) error {
 	if len(batch) == 0 {
 		return fmt.Errorf("empty batch")
@@ -577,4 +825,59 @@ func prepareTransaction(header *common.Header, payload *peer.ChaincodeProposalPa
 	}
 
 	return &common.Envelope{Payload: paylBytes}, nil
+}
+
+// TxnBroadcastMagic 是用於標記交易廣播消息的魔數
+// 0x54584E45 = "TXNE" (Transaction Envelope)
+const TxnBroadcastMagic uint32 = 0x54584E45
+
+// broadcastTxnViaGossip 通過 gossip 廣播交易給其他 peer
+// 這確保所有 peer 都有交易的完整數據，用於 hash-only block 模式
+func (gs *Server) broadcastTxnViaGossip(channelID string, hash []byte, env *common.Envelope) {
+	if gs.gossipService == nil {
+		fmt.Printf("⚠️  [Gateway Gossip] gossipService 未初始化，跳過廣播\n")
+		return
+	}
+
+	// 序列化交易
+	envBytes, err := proto.Marshal(env)
+	if err != nil {
+		fmt.Printf("❌ [Gateway Gossip] 序列化交易失敗: %v\n", err)
+		return
+	}
+
+	// 構建 gossip 消息
+	// 使用 DataMessage 類型，將交易數據放在 Payload 中
+	// SeqNum 使用一個特殊的高位值來標識這是交易廣播（不會與區塊編號衝突）
+	// 區塊編號通常是從 0 開始的小數字，我們使用 0xFFFFFFFF00000000 + hash 前 4 bytes
+	seqNum := uint64(0xFFFFFFFF00000000) |
+		uint64(hash[0])<<24 | uint64(hash[1])<<16 | uint64(hash[2])<<8 | uint64(hash[3])
+
+	// 構建自定義的 payload，包含魔數、hash 和交易數據
+	// 格式: [4B magic=0x54584E45][32B hash][envelope bytes]
+	payloadData := make([]byte, 4+32+len(envBytes))
+	// 寫入魔數（大端序）
+	binary.BigEndian.PutUint32(payloadData[0:4], TxnBroadcastMagic)
+	// 寫入 hash
+	copy(payloadData[4:36], hash)
+	// 寫入 envelope
+	copy(payloadData[36:], envBytes)
+
+	gossipMsg := &gproto.GossipMessage{
+		Channel: []byte(channelID),
+		Tag:     gproto.GossipMessage_CHAN_AND_ORG, // 在 channel 和 org 範圍內廣播
+		Content: &gproto.GossipMessage_DataMsg{
+			DataMsg: &gproto.DataMessage{
+				Payload: &gproto.Payload{
+					SeqNum: seqNum,
+					Data:   payloadData,
+				},
+			},
+		},
+	}
+
+	// 廣播消息
+	gs.gossipService.Gossip(gossipMsg)
+	fmt.Printf("📡 [Gateway Gossip] 廣播交易 hash=%x... (channel=%s, size=%d)\n",
+		hash[:8], channelID, len(envBytes))
 }

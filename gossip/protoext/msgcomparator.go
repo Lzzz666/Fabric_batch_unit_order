@@ -70,7 +70,41 @@ func (mc *msgComparator) identityInvalidationPolicy(thisIdentityMsg *gossip.Peer
 	return common.MessageNoAction
 }
 
+// TxnBroadcastMagic is the magic number for transaction broadcast messages
+// 0x54584E45 = "TXNE" (Transaction Envelope)
+const TxnBroadcastMagic uint32 = 0x54584E45
+
+// isTxnBroadcastMsg checks if a DataMessage is a transaction broadcast message
+// by checking the magic number prefix in the payload data
+func isTxnBroadcastMsg(dataMsg *gossip.DataMessage) bool {
+	if dataMsg == nil || dataMsg.Payload == nil || len(dataMsg.Payload.Data) < 4 {
+		return false
+	}
+	data := dataMsg.Payload.Data
+	magic := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+	return magic == TxnBroadcastMagic
+}
+
 func (mc *msgComparator) dataInvalidationPolicy(thisDataMsg *gossip.DataMessage, thatDataMsg *gossip.DataMessage) common.InvalidationResult {
+	// 🔥 Skip comparison for transaction broadcast messages
+	// They use special SeqNum that doesn't follow block sequence
+	thisIsTxnBroadcast := isTxnBroadcastMsg(thisDataMsg)
+	thatIsTxnBroadcast := isTxnBroadcastMsg(thatDataMsg)
+
+	// If one is a txn broadcast and the other is a block, don't invalidate either
+	if thisIsTxnBroadcast != thatIsTxnBroadcast {
+		return common.MessageNoAction
+	}
+
+	// If both are txn broadcasts with same SeqNum (same hash prefix), skip duplicate
+	if thisIsTxnBroadcast && thatIsTxnBroadcast {
+		if thisDataMsg.Payload.SeqNum == thatDataMsg.Payload.SeqNum {
+			return common.MessageInvalidated
+		}
+		return common.MessageNoAction
+	}
+
+	// Both are blocks - original logic
 	if thisDataMsg.Payload.SeqNum == thatDataMsg.Payload.SeqNum {
 		return common.MessageInvalidated
 	}

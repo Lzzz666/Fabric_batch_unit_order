@@ -412,6 +412,10 @@ type txInfo struct {
 // getTxInfoFromTransactionBytes parses a transaction and returns info required for private data retrieval
 func getTxInfoFromTransactionBytes(envBytes []byte) (*txInfo, error) {
 	txInfo := &txInfo{}
+	// Hash-only block placeholder: 32-byte entries are transaction hashes, not envelopes
+	if len(envBytes) == 32 {
+		return nil, errors.New("hash placeholder, not an envelope")
+	}
 	env, err := protoutil.GetEnvelopeFromBlock(envBytes)
 	if err != nil {
 		logger.Warningf("Invalid envelope: %s", err)

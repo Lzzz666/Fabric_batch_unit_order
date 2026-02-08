@@ -205,17 +205,31 @@ func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
 		var err error
 		txStatInfo := &TxStatInfo{TxType: -1}
 		txsStatInfo = append(txsStatInfo, txStatInfo)
+		// Hash-only block placeholder: 32-byte entries are transaction hashes, not envelopes (e.g. unresolved from TxnPool)
+		if len(envBytes) == 32 {
+			txStatInfo.TxIDFromChannelHeader = ""
+			txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+			logger.Debugf("Block [%d] Transaction index [%d] is a 32-byte hash placeholder, skipping",
+				blk.Header.Number, txIndex)
+			continue
+		}
 		if env, err = protoutil.GetEnvelopeFromBlock(envBytes); err == nil {
 			if payload, err = protoutil.UnmarshalPayload(env.Payload); err == nil {
 				chdr, err = protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 			}
 		}
-		txStatInfo.TxIDFromChannelHeader = chdr.GetTxId()
+		if chdr != nil {
+			txStatInfo.TxIDFromChannelHeader = chdr.GetTxId()
+		}
 		if txsFilter.IsInvalid(txIndex) {
 			// Skipping invalid transaction
+			chdrStr := ""
+			if chdr != nil {
+				chdrStr = chdr.GetChannelId()
+			}
 			logger.Warningf("Channel [%s]: Block [%d] Transaction index [%d] TxId [%s]"+
 				" marked as invalid by committer. Reason code [%s]",
-				chdr.GetChannelId(), blk.Header.Number, txIndex, chdr.GetTxId(),
+				chdrStr, blk.Header.Number, txIndex, txStatInfo.TxIDFromChannelHeader,
 				txsFilter.Flag(txIndex).String())
 			continue
 		}
