@@ -17,8 +17,8 @@ const (
 	DefStateResponseTimeout = 3 * time.Second
 	DefStateBatchSize       = 10
 	DefStateMaxRetries      = 3
-	DefStateBlockBufferSize = 500  // 增大 buffer，允許更大的 block 序號差距
-	DefStateChannelSize     = 100
+	DefStateBlockBufferSize = 5000  // 增大 buffer，允許更大的 block 序號差距
+	DefStateChannelSize     = 1000
 	DefStateEnabled         = true // 啟用 state transfer，自動恢復缺失的 block
 )
 

@@ -49,7 +49,7 @@ const (
 	blocking    = true
 	nonBlocking = false
 
-	enqueueRetryInterval = time.Millisecond * 100
+	enqueueRetryInterval = time.Millisecond * 1
 )
 
 // Configuration keeps state transfer configuration parameters

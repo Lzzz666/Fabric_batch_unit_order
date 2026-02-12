@@ -1010,7 +1010,7 @@ func (ch *chain) main() {
 				ch.support.WriteBlock(block, nil)
 
 				// 等待一下讓異步寫入完成
-				time.Sleep(100 * time.Millisecond)
+				// time.Sleep(100 * time.Millisecond)
 				heightAfter := ch.support.Height()
 
 				fmt.Printf("[main] ✓ Hash-only 區塊 #%d WriteBlock 返回 (height: %d → %d)\n",
