@@ -64,10 +64,10 @@ type grpcOrdererConn struct {
 func createGRPCConnections(broadcastCount int) []*grpcOrdererConn {
 
 	// GCP orderer addresses (使用內部 IP)
-	// orderer-0: 10.140.0.9, orderer-1: 10.140.0.2, orderer-2: 10.140.0.3, orderer-3: 10.140.0.4
+	// orderer-0: 10.140.0.19, orderer-1: 10.140.0.20, orderer-2: 10.140.0.21, orderer-3: 10.140.0.22
 	ports := []string{"7073", "8073", "9073", "10073"}
-	// addrs := []string{"10.140.0.9", "10.140.0.2", "10.140.0.3", "10.140.0.4"}
-	addrs := []string{"localhost", "localhost", "localhost", "localhost"}
+	addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
+	// addrs := []string{"localhost", "localhost", "localhost", "localhost"}
 
 	conns := make([]*grpcOrdererConn, 4)
 	for i := 4 - broadcastCount; i < 4; i++ {

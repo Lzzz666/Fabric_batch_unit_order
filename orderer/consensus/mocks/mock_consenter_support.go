@@ -87,6 +87,17 @@ type FakeConsenterSupport struct {
 	createNextBlockReturnsOnCall map[int]struct {
 		result1 *common.Block
 	}
+	CreateNextHashBlockStub        func([][]byte) *common.Block
+	createNextHashBlockMutex       sync.RWMutex
+	createNextHashBlockArgsForCall []struct {
+		arg1 [][]byte
+	}
+	createNextHashBlockReturns struct {
+		result1 *common.Block
+	}
+	createNextHashBlockReturnsOnCall map[int]struct {
+		result1 *common.Block
+	}
 	HeightStub        func() uint64
 	heightMutex       sync.RWMutex
 	heightArgsForCall []struct {
@@ -198,6 +209,12 @@ type FakeConsenterSupport struct {
 	WriteBlockStub        func(*common.Block, []byte)
 	writeBlockMutex       sync.RWMutex
 	writeBlockArgsForCall []struct {
+		arg1 *common.Block
+		arg2 []byte
+	}
+	WriteBlockSyncStub        func(*common.Block, []byte)
+	writeBlockSyncMutex       sync.RWMutex
+	writeBlockSyncArgsForCall []struct {
 		arg1 *common.Block
 		arg2 []byte
 	}
@@ -615,6 +632,72 @@ func (fake *FakeConsenterSupport) CreateNextBlockReturnsOnCall(i int, result1 *c
 		})
 	}
 	fake.createNextBlockReturnsOnCall[i] = struct {
+		result1 *common.Block
+	}{result1}
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlock(arg1 [][]byte) *common.Block {
+	var arg1Copy [][]byte
+	if arg1 != nil {
+		arg1Copy = make([][]byte, len(arg1))
+		copy(arg1Copy, arg1)
+	}
+	fake.createNextHashBlockMutex.Lock()
+	ret, specificReturn := fake.createNextHashBlockReturnsOnCall[len(fake.createNextHashBlockArgsForCall)]
+	fake.createNextHashBlockArgsForCall = append(fake.createNextHashBlockArgsForCall, struct {
+		arg1 [][]byte
+	}{arg1Copy})
+	stub := fake.CreateNextHashBlockStub
+	fakeReturns := fake.createNextHashBlockReturns
+	fake.recordInvocation("CreateNextHashBlock", []interface{}{arg1Copy})
+	fake.createNextHashBlockMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlockCallCount() int {
+	fake.createNextHashBlockMutex.RLock()
+	defer fake.createNextHashBlockMutex.RUnlock()
+	return len(fake.createNextHashBlockArgsForCall)
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlockCalls(stub func([][]byte) *common.Block) {
+	fake.createNextHashBlockMutex.Lock()
+	defer fake.createNextHashBlockMutex.Unlock()
+	fake.CreateNextHashBlockStub = stub
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlockArgsForCall(i int) [][]byte {
+	fake.createNextHashBlockMutex.RLock()
+	defer fake.createNextHashBlockMutex.RUnlock()
+	argsForCall := fake.createNextHashBlockArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlockReturns(result1 *common.Block) {
+	fake.createNextHashBlockMutex.Lock()
+	defer fake.createNextHashBlockMutex.Unlock()
+	fake.CreateNextHashBlockStub = nil
+	fake.createNextHashBlockReturns = struct {
+		result1 *common.Block
+	}{result1}
+}
+
+func (fake *FakeConsenterSupport) CreateNextHashBlockReturnsOnCall(i int, result1 *common.Block) {
+	fake.createNextHashBlockMutex.Lock()
+	defer fake.createNextHashBlockMutex.Unlock()
+	fake.CreateNextHashBlockStub = nil
+	if fake.createNextHashBlockReturnsOnCall == nil {
+		fake.createNextHashBlockReturnsOnCall = make(map[int]struct {
+			result1 *common.Block
+		})
+	}
+	fake.createNextHashBlockReturnsOnCall[i] = struct {
 		result1 *common.Block
 	}{result1}
 }
@@ -1192,6 +1275,44 @@ func (fake *FakeConsenterSupport) WriteBlockArgsForCall(i int) (*common.Block, [
 	return argsForCall.arg1, argsForCall.arg2
 }
 
+func (fake *FakeConsenterSupport) WriteBlockSync(arg1 *common.Block, arg2 []byte) {
+	var arg2Copy []byte
+	if arg2 != nil {
+		arg2Copy = make([]byte, len(arg2))
+		copy(arg2Copy, arg2)
+	}
+	fake.writeBlockSyncMutex.Lock()
+	fake.writeBlockSyncArgsForCall = append(fake.writeBlockSyncArgsForCall, struct {
+		arg1 *common.Block
+		arg2 []byte
+	}{arg1, arg2Copy})
+	stub := fake.WriteBlockSyncStub
+	fake.recordInvocation("WriteBlockSync", []interface{}{arg1, arg2Copy})
+	fake.writeBlockSyncMutex.Unlock()
+	if stub != nil {
+		fake.WriteBlockSyncStub(arg1, arg2)
+	}
+}
+
+func (fake *FakeConsenterSupport) WriteBlockSyncCallCount() int {
+	fake.writeBlockSyncMutex.RLock()
+	defer fake.writeBlockSyncMutex.RUnlock()
+	return len(fake.writeBlockSyncArgsForCall)
+}
+
+func (fake *FakeConsenterSupport) WriteBlockSyncCalls(stub func(*common.Block, []byte)) {
+	fake.writeBlockSyncMutex.Lock()
+	defer fake.writeBlockSyncMutex.Unlock()
+	fake.WriteBlockSyncStub = stub
+}
+
+func (fake *FakeConsenterSupport) WriteBlockSyncArgsForCall(i int) (*common.Block, []byte) {
+	fake.writeBlockSyncMutex.RLock()
+	defer fake.writeBlockSyncMutex.RUnlock()
+	argsForCall := fake.writeBlockSyncArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
 func (fake *FakeConsenterSupport) WriteConfigBlock(arg1 *common.Block, arg2 []byte) {
 	var arg2Copy []byte
 	if arg2 != nil {
@@ -1247,6 +1368,8 @@ func (fake *FakeConsenterSupport) Invocations() map[string][][]interface{} {
 	defer fake.classifyMsgMutex.RUnlock()
 	fake.createNextBlockMutex.RLock()
 	defer fake.createNextBlockMutex.RUnlock()
+	fake.createNextHashBlockMutex.RLock()
+	defer fake.createNextHashBlockMutex.RUnlock()
 	fake.heightMutex.RLock()
 	defer fake.heightMutex.RUnlock()
 	fake.processConfigMsgMutex.RLock()
@@ -1267,6 +1390,8 @@ func (fake *FakeConsenterSupport) Invocations() map[string][][]interface{} {
 	defer fake.signatureVerifierMutex.RUnlock()
 	fake.writeBlockMutex.RLock()
 	defer fake.writeBlockMutex.RUnlock()
+	fake.writeBlockSyncMutex.RLock()
+	defer fake.writeBlockSyncMutex.RUnlock()
 	fake.writeConfigBlockMutex.RLock()
 	defer fake.writeConfigBlockMutex.RUnlock()
 	copiedInvocations := map[string][][]interface{}{}
