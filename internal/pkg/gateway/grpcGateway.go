@@ -14,8 +14,8 @@ import (
 func (gs *Server) connectGRPC() error {
 	address := gs.options.SequencerAddress
 	if address == "" {
-		address = "172.20.10.5:7073" // 默認 gRPC 端口（不同於 UDP 的 7072）
-		// address = "10.140.0.10:7073"
+		// address = "172.20.10.5:7073" // 默認 gRPC 端口（不同於 UDP 的 7072）
+		address = "10.140.0.10:7073"
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 正在連接到 sequencer: %s\n", address)
