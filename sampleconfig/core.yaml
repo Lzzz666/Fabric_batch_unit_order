@@ -254,7 +254,7 @@ peer:
             # peer.gossip.orgleader being false, the peer's ledger may lag behind
             # the rest of the peers and will never catch up due to state transfer
             # being disabled.
-            enabled: false
+            enabled: true
             # checkInterval interval to check whether peer is lagging behind enough to
             # request blocks via state transfer from another peer.
             checkInterval: 10s
@@ -267,7 +267,7 @@ peer:
             # which captures blocks and takes care to deliver them in order
             # down to the ledger layer. The actual buffer size is bounded between
             # 0 and 2*blockBufferSize, each channel maintains its own buffer
-            blockBufferSize: 20
+            blockBufferSize: 5000
             # maxRetries maximum number of re-tries to ask
             # for single state transfer request
             maxRetries: 3
