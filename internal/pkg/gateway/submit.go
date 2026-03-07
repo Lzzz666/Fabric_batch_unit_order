@@ -47,7 +47,7 @@ type SimpleBatchCollector struct {
 	timeout       time.Duration
 	timer         *time.Timer
 	sendFunc      func([]*common.Envelope) error
-	sendHashFunc  func([][]byte) error // hash-only batch send function
+	sendHashFunc  func([][]byte) error                 // hash-only batch send function
 	storeTxnFunc  func([]byte, *common.Envelope) error // store transaction in TxnPool
 	batchCount    uint64
 	totalTxnCount uint64
@@ -193,6 +193,7 @@ func (gs *Server) Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.Su
 	if len(txn.Signature) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "prepared transaction must be signed")
 	}
+	gwBench.s1AddTxn() // [BENCH] Stage1: txn arrival
 	orderers, clusterSize, err := gs.registry.orderers(request.ChannelId)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%s", err)
@@ -326,7 +327,7 @@ func (gs *Server) submitNonBFT(ctx context.Context, orderers []*orderer, txn *co
 
 	// 初始化 batch collector（lazy initialization）
 	if gs.batchCollector == nil {
-		batchSize := 100                      // 批次大小：100 筆交易
+		batchSize := 200                // 批次大小：100 筆交易
 		batchTimeout := 2 * time.Second // 超時：2s
 
 		fmt.Printf("🚀 [Batch] 初始化批次收集器 (hash-only mode): size=%d, timeout=%v, transport=%s\n",
@@ -551,6 +552,7 @@ func (gs *Server) broadcastHashBatchByUDP(hashes [][]byte) error {
 	throughput := float64(len(hashes)) / elapsed.Seconds()
 	fmt.Printf("✅ [HashBatchUDP] Sent %d hashes in %v (%.0f hash/s)\n",
 		len(hashes), elapsed, throughput)
+	gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
 
 	return nil
 }
@@ -629,6 +631,7 @@ func (gs *Server) broadcastHashBatchByGRPC(hashes [][]byte) error {
 	throughput := float64(len(hashes)) / elapsed.Seconds()
 	fmt.Printf("✅ [HashBatchGRPC] Sent %d hashes in %v (%.0f hash/s), seq=%d\n",
 		len(hashes), elapsed, throughput, resp.SequenceNumber)
+	gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
 
 	return nil
 }
