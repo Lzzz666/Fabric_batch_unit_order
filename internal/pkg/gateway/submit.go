@@ -327,7 +327,7 @@ func (gs *Server) submitNonBFT(ctx context.Context, orderers []*orderer, txn *co
 
 	// 初始化 batch collector（lazy initialization）
 	if gs.batchCollector == nil {
-		batchSize := 200                // 批次大小：100 筆交易
+		batchSize := 300                // 批次大小：100 筆交易
 		batchTimeout := 2 * time.Second // 超時：2s
 
 		fmt.Printf("🚀 [Batch] 初始化批次收集器 (hash-only mode): size=%d, timeout=%v, transport=%s\n",
