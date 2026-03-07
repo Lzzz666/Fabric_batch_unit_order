@@ -260,7 +260,7 @@ peer:
             # other peers
             responseTimeout: 3s
             # batchSize the number of blocks to request via state transfer from another peer
-            batchSize: 10
+            batchSize: 100
             # blockBufferSize reflects the size of the re-ordering buffer
             # which captures blocks and takes care to deliver them in order
             # down to the ledger layer. The actual buffer size is bounded between
