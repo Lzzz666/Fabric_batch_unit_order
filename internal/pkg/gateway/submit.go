@@ -193,7 +193,7 @@ func (gs *Server) Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.Su
 	if len(txn.Signature) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "prepared transaction must be signed")
 	}
-	gwBench.s1AddTxn() // [BENCH] Stage1: txn arrival
+	// gwBench.s1AddTxn() // [BENCH] Stage1: txn arrival
 	orderers, clusterSize, err := gs.registry.orderers(request.ChannelId)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%s", err)
@@ -552,7 +552,7 @@ func (gs *Server) broadcastHashBatchByUDP(hashes [][]byte) error {
 	throughput := float64(len(hashes)) / elapsed.Seconds()
 	fmt.Printf("✅ [HashBatchUDP] Sent %d hashes in %v (%.0f hash/s)\n",
 		len(hashes), elapsed, throughput)
-	gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
+	// gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
 
 	return nil
 }
@@ -631,7 +631,7 @@ func (gs *Server) broadcastHashBatchByGRPC(hashes [][]byte) error {
 	throughput := float64(len(hashes)) / elapsed.Seconds()
 	fmt.Printf("✅ [HashBatchGRPC] Sent %d hashes in %v (%.0f hash/s), seq=%d\n",
 		len(hashes), elapsed, throughput, resp.SequenceNumber)
-	gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
+	// gwBench.s2AddBatch(len(hashes), elapsed) // [BENCH] Stage2: batch→seq RTT
 
 	return nil
 }
