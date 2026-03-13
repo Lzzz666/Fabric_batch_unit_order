@@ -102,9 +102,17 @@ func newChain(support consensus.ConsenterSupport, consenters []*etcdraft.Consent
 
 	nopaxosServerConfig := &nopaxosConfig.ProtocolConfig{}
 
-	host, _, err := net.SplitHostPort(config.Operations.ListenAddress)
-	if err != nil {
-		fmt.Println("Error:", err)
+	// 優先從環境變數取得本地節點 ID，確保能和共識成員配置對上
+	// 例如在 docker compose 中設定：NOPAXOS_NODE_ID=orderer.example.com
+	nodeID := os.Getenv("NOPAXOS_NODE_ID")
+	if nodeID == "" {
+		// 若未設定，退回使用原本的 Operations.ListenAddress 主機名稱
+		host, _, err := net.SplitHostPort(config.Operations.ListenAddress)
+		if err != nil {
+			fmt.Println("Error parsing Operations.ListenAddress:", err)
+		} else {
+			nodeID = host
+		}
 	}
 
 	members := make(map[string]protocol.Member)
@@ -120,7 +128,7 @@ func newChain(support consensus.ConsenterSupport, consenters []*etcdraft.Consent
 	}
 
 	cluster := protocol.NodeCluster{
-		MemberID: host,
+		MemberID: nodeID,
 		Members:  members,
 	}
 
