@@ -66,8 +66,8 @@ func createGRPCConnections(broadcastCount int) []*grpcOrdererConn {
 	ports := []string{"7073", "8073", "9073", "10073"}
 	addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
 
-	conns := make([]*grpcOrdererConn, 8)
-	for i := 8 - broadcastCount; i < 8; i++ {
+	conns := make([]*grpcOrdererConn, 4)
+	for i := 4 - broadcastCount; i < 4; i++ {
 		// gRPC 端口 = UDP 端口 + 1
 		udpPort, _ := strconv.Atoi(ports[i])
 		grpcPort := strconv.Itoa(udpPort + 1)

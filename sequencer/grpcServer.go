@@ -63,7 +63,7 @@ func (s *SequencerGRPCServer) SubmitBatch(ctx context.Context, req *SubmitBatchR
 		ports := []string{"7073", "8073", "9073", "10073"}
 		addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
 
-		for i := 8 - s.broadcastCount; i < 8; i++ {
+		for i := 4 - s.broadcastCount; i < 4; i++ {
 			// 如果連接不存在，嘗試創建
 			if s.grpcOrdererConns[i] == nil {
 				udpPort, _ := strconv.Atoi(ports[i])
@@ -118,7 +118,7 @@ func (s *SequencerGRPCServer) SubmitBatch(ctx context.Context, req *SubmitBatchR
 		}
 	} else {
 		// 使用 UDP 轉發（原有邏輯）
-		for i := 8 - s.broadcastCount; i < 8; i++ {
+		for i := 4 - s.broadcastCount; i < 4; i++ {
 			if s.ordererConns[i] == nil {
 				failCount++
 				continue

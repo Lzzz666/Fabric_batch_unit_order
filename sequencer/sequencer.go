@@ -56,12 +56,12 @@ func main() {
 		// 🔥 預先創建並復用 gRPC 連接
 		fmt.Printf("🔌 [Sequencer] 使用 gRPC 模式，正在預先創建連接...\n")
 		grpcOrdererConns = createGRPCConnections(broadcastCount)
-		ordererConns = make([]*net.UDPConn, 8) // 保持為 nil，因為不使用 UDP
+		ordererConns = make([]*net.UDPConn, 4) // 保持為 nil，因為不使用 UDP
 	} else {
 		// 🔥 預先創建並復用 UDP 連接，避免每次循環都創建新連接
 		fmt.Printf("🔌 [Sequencer] 使用 UDP 模式，正在預先創建連接...\n")
-		ordererConns = make([]*net.UDPConn, 8)
-		for i := 8 - broadcastCount; i < 8; i++ {
+		ordererConns = make([]*net.UDPConn, 4)
+		for i := 4 - broadcastCount; i < 4; i++ {
 			ordererAddress := net.JoinHostPort(addrs[i], ports[i])
 			ordererServerAddr, err := net.ResolveUDPAddr("udp", ordererAddress)
 			if err != nil {
