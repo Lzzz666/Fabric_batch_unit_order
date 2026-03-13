@@ -63,8 +63,8 @@ type grpcOrdererConn struct {
 
 func createGRPCConnections(broadcastCount int) []*grpcOrdererConn {
 
-	ports := [9]string{"3073", "4073", "5073", "6073", "7073", "9073", "10073", "8073"}
-	addrs := [9]string{"localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost"}
+	ports := []string{"7073", "8073", "9073", "10073"}
+	addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
 
 	conns := make([]*grpcOrdererConn, 8)
 	for i := 8 - broadcastCount; i < 8; i++ {

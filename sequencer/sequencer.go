@@ -43,8 +43,8 @@ func main() {
 	// 🔥 支援大型 batch：100 筆交易 × 3500 bytes ≈ 350KB，設置為 1MB 更安全
 	buffer := make([]byte, 1024*1024) // 1 MB buffer
 
-	ports := [9]string{"3073", "4073", "5073", "6073", "7073", "9073", "10073", "8073"}
-	addrs := [9]string{"localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost", "localhost"}
+	ports := []string{"7073", "8073", "9073", "10073"}
+	addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
 
 	// 檢查是否使用 gRPC 發送到 orderer
 	useGRPC := true
