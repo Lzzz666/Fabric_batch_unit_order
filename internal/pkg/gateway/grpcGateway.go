@@ -61,8 +61,6 @@ func (gs *Server) disconnectGRPC() error {
 				gs.GrpcGateway = nil
 				// 然後關閉連接（可能非同步）
 				conn.Close()
-				// 等待一小段時間讓連接完全關閉
-				time.Sleep(200 * time.Millisecond)
 				fmt.Printf("🔒 [gRPC Gateway] 連接已關閉\n")
 			} else {
 				fmt.Printf("🔒 [gRPC Gateway] 連接已經處於 Shutdown 狀態\n")
@@ -79,15 +77,11 @@ func (gs *Server) disconnectGRPC() error {
 func (gs *Server) reconnectGRPC() error {
 	fmt.Println("🔄 [gRPC Gateway] Attempting to reconnect...")
 
-	// 先關閉舊連接，disconnectGRPC 內部已經包含了等待時間
 	gs.disconnectGRPC()
-
-	// 額外等待一段時間，確保舊連接完全關閉
-	time.Sleep(300 * time.Millisecond)
 
 	address := gs.options.SequencerAddress
 	if address == "" {
-		address = "172.20.10.5:7073" // 默認 gRPC 端口
+		address = "172.20.10.2:7073" // 默認 gRPC 端口
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 重新連接到 sequencer: %s (阻塞模式, timeout=%v)\n", address, gs.options.DialTimeout)

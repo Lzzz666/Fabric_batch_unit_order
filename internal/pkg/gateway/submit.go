@@ -58,59 +58,56 @@ func NewSimpleBatchCollector(batchSize int, timeout time.Duration, sendFunc func
 // Add 添加交易到批次
 func (sbc *SimpleBatchCollector) Add(txn *common.Envelope) error {
 	sbc.mu.Lock()
-	defer sbc.mu.Unlock()
 
-	// 添加到緩衝區
 	sbc.buffer = append(sbc.buffer, txn)
 	sbc.totalTxnCount++
 
-	// 如果是第一筆交易，啟動計時器
 	if len(sbc.buffer) == 1 {
 		fmt.Printf("⏳ [Batch] 第一筆交易加入，啟動 %v 超時計時器 (total=%d)\n", sbc.timeout, sbc.totalTxnCount)
-		sbc.timer = time.AfterFunc(sbc.timeout, func() {
-			sbc.mu.Lock()
-			defer sbc.mu.Unlock()
-			if len(sbc.buffer) > 0 {
-				fmt.Printf("⏰ [Batch] Timeout triggered, flushing %d txns\n", len(sbc.buffer))
-				sbc.flushLocked()
-			}
-		})
+		sbc.timer = time.AfterFunc(sbc.timeout, sbc.timerFlush)
 	} else {
 		fmt.Printf("📝 [Batch] 交易加入 batch: buffer size=%d/%d, total=%d\n", len(sbc.buffer), sbc.batchSize, sbc.totalTxnCount)
 	}
 
-	// 檢查是否達到批次大小
+	var batch []*common.Envelope
 	if len(sbc.buffer) >= sbc.batchSize {
-		return sbc.flushLocked()
+		batch = sbc.drainLocked()
 	}
+	sbc.mu.Unlock() // 鎖只保護 buffer，gRPC call 在鎖外執行
 
+	if batch != nil {
+		return sbc.sendFunc(batch)
+	}
 	return nil
 }
 
-// flushLocked 發送當前批次（需持有鎖）
-func (sbc *SimpleBatchCollector) flushLocked() error {
+// timerFlush 由 timer callback 觸發，在鎖外執行 gRPC call
+func (sbc *SimpleBatchCollector) timerFlush() {
+	sbc.mu.Lock()
+	batch := sbc.drainLocked()
+	sbc.mu.Unlock()
+
+	if len(batch) > 0 {
+		fmt.Printf("⏰ [Batch] Timeout triggered, flushing %d txns\n", len(batch))
+		sbc.sendFunc(batch) //nolint:errcheck
+	}
+}
+
+// drainLocked 在持鎖狀態下取出 buffer（不執行 gRPC）
+func (sbc *SimpleBatchCollector) drainLocked() []*common.Envelope {
 	if len(sbc.buffer) == 0 {
 		return nil
 	}
-
-	// 停止計時器
 	if sbc.timer != nil {
 		sbc.timer.Stop()
 		sbc.timer = nil
 	}
-
-	// 複製批次
 	batch := make([]*common.Envelope, len(sbc.buffer))
 	copy(batch, sbc.buffer)
-
-	// 清空緩衝區
 	sbc.buffer = sbc.buffer[:0]
 	sbc.batchCount++
-
 	fmt.Printf("📦 [Batch] Flushing batch #%d with %d txns\n", sbc.batchCount, len(batch))
-
-	// 發送批次
-	return sbc.sendFunc(batch)
+	return batch
 }
 
 // Submit will send the signed transaction to the ordering service. The response indicates whether the transaction was
