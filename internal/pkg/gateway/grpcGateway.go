@@ -15,7 +15,7 @@ func (gs *Server) connectGRPC() error {
 	address := gs.options.SequencerAddress
 	if address == "" {
 		// address = "172.20.10.5:7073" // 默認 gRPC 端口（不同於 UDP 的 7072）
-		address = "10.140.0.10:7073"
+		address = "10.140.0.23:7073"
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 正在連接到 sequencer: %s\n", address)
@@ -81,7 +81,8 @@ func (gs *Server) reconnectGRPC() error {
 
 	address := gs.options.SequencerAddress
 	if address == "" {
-		address = "172.20.10.2:7073" // 默認 gRPC 端口
+		// address = "172.20.10.2:7073" // 默認 gRPC 端口
+		address = "10.140.0.23:7073"
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 重新連接到 sequencer: %s (阻塞模式, timeout=%v)\n", address, gs.options.DialTimeout)
