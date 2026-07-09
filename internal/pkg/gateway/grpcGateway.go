@@ -87,7 +87,7 @@ func (gs *Server) reconnectGRPC() error {
 
 	address := gs.options.SequencerAddress
 	if address == "" {
-		address = "172.20.10.5:7073" // 默認 gRPC 端口
+		address = "10.140.0.30:7072" // 默認 gRPC 端口
 	}
 
 	fmt.Printf("🔌 [gRPC Gateway] 重新連接到 sequencer: %s (阻塞模式, timeout=%v)\n", address, gs.options.DialTimeout)
