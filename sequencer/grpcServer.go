@@ -61,7 +61,7 @@ func (s *SequencerGRPCServer) SubmitBatch(ctx context.Context, req *SubmitBatchR
 	if s.useGRPC {
 		// 使用 gRPC 轉發（使用預先創建的連接，如果不存在則動態創建）
 		ports := []string{"7073", "8073", "9073", "10073"}
-		addrs := []string{"10.140.0.19", "10.140.0.20", "10.140.0.21", "10.140.0.22"}
+		addrs := []string{"10.140.0.26", "10.140.0.24", "10.140.0.31", "10.140.0.27"}
 
 		for i := 4 - s.broadcastCount; i < 4; i++ {
 			// 如果連接不存在，嘗試創建
