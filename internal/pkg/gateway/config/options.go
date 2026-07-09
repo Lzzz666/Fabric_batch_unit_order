@@ -44,7 +44,7 @@ var defaultOptions = Options{
 	DialTimeout:        30 * time.Second,
 	SequencerTransport: TransportGRPC, // 默認使用 gRPC
 	// SequencerAddress:   "host.docker.internal:7073",
-	SequencerAddress: "10.140.0.23:7073", // 舊的硬編碼地址
+	SequencerAddress: "10.140.0.30:7073", // 舊的硬編碼地址
 }
 
 // DefaultOptions gets the default Gateway configuration Options
