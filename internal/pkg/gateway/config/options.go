@@ -45,7 +45,7 @@ var defaultOptions = Options{
 	BroadcastTimeout:   10 * time.Second,
 	DialTimeout:        30 * time.Second,
 	SequencerTransport: TransportGRPC,
-	SequencerAddress:   "10.140.0.23:7073", // GCP sequencer VM
+	SequencerAddress:   "10.140.0.30:7073", // GCP sequencer VM
 	// Peer 在 Docker 內、Sequencer 在 host 時請用 host.docker.internal（Mac/Windows）
 	// SequencerAddress: "host.docker.internal:7073",
 }
